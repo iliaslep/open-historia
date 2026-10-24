@@ -1,4 +1,5 @@
 import { readWorldSimulation } from "../../../server/simulation/state.js";
+import { ClockRequestError, prepareClockAdvance, validateClockRequest } from "../../../server/simulation/clockCommand.js";
 /*! Open Historia — web-mode library/scenario/game/runtime store © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 // Browser (IndexedDB) port of server/libraryStore.js. Backs /api/library,
 // /api/scenarios*, /api/games*, /api/runtime/json*, /api/runtime/pmtiles* in web
@@ -6,7 +7,7 @@ import { readWorldSimulation } from "../../../server/simulation/state.js";
 // (src/runtime/library.js, assets.js) works exactly as against the real server.
 // Web build only.
 
-import { STORES, idbGet, idbGetAll, idbGetAllKeys, idbPut, idbPutPair, idbDelete, kvGet, kvPut } from "./idb.js";
+import { STORES, idbGet, idbGetAll, idbGetAllKeys, idbPut, idbPutPair, idbUpdatePair, idbDelete, kvGet, kvPut } from "./idb.js";
 import { serializeWrite } from "./writeQueue.js";
 import { coarsenFeatureCollection } from "../../../server/coarseGeometry.js";
 import { layOutScenarioBundle } from "../../../server/mapProjection.js";
@@ -1688,6 +1689,25 @@ const writeGameSnapshots = async (id, snapshots) => {
   return { ok: true };
 };
 
+const advanceGameClock = (id, request) => serializeWrite(async () => {
+  const command = validateClockRequest(request);
+  const record = await idbUpdatePair(STORES.games, id, STORES.gameMeta, (current) => {
+    if (!current) throw new ClockRequestError(`Game not found: ${id}`, 404);
+    const next = prepareClockAdvance({
+      game: jsonAsset(current, "game"), world: jsonAsset(current, "world"), meta: current.meta ?? {},
+    }, command, id);
+    current.json = { ...current.json, game: next.game, world: next.world };
+    const previousTime = Date.parse(current.meta.updatedAt);
+    const updatedAt = new Date(Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0)).toISOString();
+    current.meta = { ...current.meta, updatedAt };
+    return current;
+  }, projectGameMeta);
+  return {
+    gameId: id, game: jsonAsset(record, "game"), world: jsonAsset(record, "world"),
+    days: record.json.world.simulation.revision - command.expectedRevision,
+  };
+});
+
 export const handleGames = async ({ method, segments, body, rawBody, contentType, rangeHeader }) => {
   const id = segments[0] ? decodeURIComponent(segments[0]) : null;
   try {
@@ -1700,6 +1720,13 @@ export const handleGames = async ({ method, segments, body, rawBody, contentType
     if (id === "import" && method === "POST") return jsonResponse(await importGameBundle(body ?? {}), 201);
 
     const sub = segments[1];
+    if (sub === "simulation" && segments[2] === "advance" && segments.length === 3 && method === "POST") {
+      try {
+        return jsonResponse(await advanceGameClock(id, body));
+      } catch (error) {
+        return errorResponse(error.message, error instanceof ClockRequestError ? error.status : 500);
+      }
+    }
     if (!sub) {
       if (method === "GET") return jsonResponse(await getGameDetails(id));
       if (method === "PUT") return jsonResponse(await updateGame(id, body ?? {}));

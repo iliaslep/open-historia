@@ -31,6 +31,13 @@ export const idbGetAll = async (store) => [...table(store).values()].map(copy);
 export const idbGetAllKeys = async (store) => [...table(store).keys()];
 export const idbPut = async (store, value) => { table(store).set(store === "kv" ? value.key : value.id, copy(value)); };
 export const idbPutPair = async (storeA, valueA, storeB, valueB) => { await idbPut(storeA, valueA); await idbPut(storeB, valueB); };
+export const idbUpdatePair = async (storeA, key, storeB, update, project) => {
+  const next = update(copy(table(storeA).get(key)));
+  const index = project(next);
+  table(storeA).set(key, copy(next));
+  table(storeB).set(index.id, copy(index));
+  return copy(next);
+};
 export const idbDelete = async (store, key) => { table(store).delete(key); };
 export const kvGet = async (key, fallback = null) => { const record = table("kv").get(key); return record ? copy(record.value) : fallback; };
 export const kvPut = (key, value) => idbPut("kv", { key, value });
@@ -84,6 +91,38 @@ const ok = (reply) => {
   assert.ok(reply.status < 300, `HTTP ${reply.status}: ${JSON.stringify(reply.data)}`);
   return reply.data;
 };
+
+test("web clock command uses per-game identity, revision conflicts and matching server response codes", async () => {
+  await reset();
+  const id = ok(await games("POST", "", { name: "Calculated", scenarioId: "default", setActive: true })).game.id;
+  const details = ok(await games("GET", id));
+  const simulation = createSimulationState({ scenarioId: "default", date: "2016-01-01", seed: 7 });
+  ok(await games("PUT", id, { world: { ...details.data.world, simulation } }));
+  const otherId = ok(await games("POST", "", { name: "Other active", scenarioId: "default", setActive: true })).game.id;
+  const otherBefore = ok(await games("GET", otherId));
+  const path = `${id}/simulation/advance`;
+  const replies = await Promise.all([
+    games("POST", path, { step: "week", expectedRevision: 0 }),
+    games("POST", path, { step: "week", expectedRevision: 0 }),
+  ]);
+  assert.deepEqual(replies.map((reply) => reply.status).sort(), [200, 409]);
+  const result = replies.find((reply) => reply.status === 200).data;
+  assert.equal(result.gameId, id);
+  assert.equal(result.days, 7);
+  assert.equal(result.game.gameDate, "2016-01-08");
+  assert.equal(result.world.simulation.date, result.game.gameDate);
+  assert.equal(result.world.simulation.revision, 7);
+  assert.deepEqual(result.world.simulation.rng, simulation.rng);
+  assert.deepEqual(ok(await games("GET", otherId)), otherBefore);
+  assert.equal(ok(await games("GET", "")).activeGameId, otherId);
+  const before = structuredClone(db);
+  for (const body of [null, { step: "day", expectedRevision: "7" }, { step: "day", expectedRevision: 7, world: {} }]) {
+    assert.equal((await games("POST", path, body)).status, 400);
+    assert.deepEqual(db, before);
+  }
+  assert.equal((await games("POST", `${otherId}/simulation/advance`, { step: "day", expectedRevision: 0 })).status, 400);
+  assert.equal((await games("POST", "missing/simulation/advance", { step: "day", expectedRevision: 0 })).status, 404);
+});
 
 test("web game checkpoints survive runtime writes and export/import with the next RNG draw intact", async () => {
   await reset();

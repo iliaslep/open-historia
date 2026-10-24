@@ -2,20 +2,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { advanceSimulationClock } from './time.js';
-import { readWorldSimulation } from './state.js';
+import { prepareClockAdvance, validateClockRequest, validateClockPair } from './clockCommand.js';
+export { ClockRequestError } from './clockCommand.js';
 
 const JOURNAL = '.simulation-clock-journal.json';
 const SCHEMA = 'open-historia-clock-transaction/1';
 const digest = (text) => createHash('sha256').update(text).digest('hex');
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-
-export class ClockRequestError extends Error {
-  constructor(message, status = 400) {
-    super(message);
-    this.status = status;
-  }
-}
 
 const syncDirectory = (directory) => {
   // Windows does not expose directory fsync through node:fs. Atomic rename still
@@ -38,18 +31,6 @@ const atomicJson = (file, value) => {
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 
-const validatePair = (pair, gameId) => {
-  if (!isObject(pair) || !isObject(pair.game) || !isObject(pair.world) || !isObject(pair.meta)) {
-    throw new Error('Invalid simulation clock record.');
-  }
-  const simulation = readWorldSimulation(pair.world);
-  if (!simulation || simulation.date !== pair.game.gameDate
-    || pair.meta.id !== gameId || pair.meta.scenarioId !== simulation.scenarioId) {
-    throw new Error('Simulation clock record has inconsistent identity or dates.');
-  }
-  return pair;
-};
-
 /**
  * Complete an interrupted commit before exposing any of its files. A malformed
  * journal fails closed and remains on disk; never silently replace it with defaults.
@@ -62,7 +43,7 @@ export function recoverSimulationClock(directory) {
     || envelope.sha256 !== digest(envelope.payload)) {
     throw new Error('Simulation clock recovery journal is corrupt or unsupported.');
   }
-  const pair = validatePair(JSON.parse(envelope.payload), path.basename(directory));
+  const pair = validateClockPair(JSON.parse(envelope.payload), path.basename(directory));
   atomicJson(path.join(directory, 'game.json'), pair.game);
   atomicJson(path.join(directory, 'world.json'), pair.world);
   atomicJson(path.join(directory, 'game-instance.json'), pair.meta);
@@ -78,28 +59,13 @@ export function recoverSimulationClock(directory) {
  */
 export function commitSimulationClock(directory, request) {
   recoverSimulationClock(directory);
-  if (!isObject(request) || Object.keys(request).length !== 2
-    || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
-    || !['day', 'week', 'month'].includes(request.step)) {
-    throw new ClockRequestError('Expected step (day/week/month) and a nonnegative integer expectedRevision.');
-  }
+  const command = validateClockRequest(request);
   const pair = {
     game: readJson(path.join(directory, 'game.json')),
     world: readJson(path.join(directory, 'world.json')),
     meta: readJson(path.join(directory, 'game-instance.json')),
   };
-  const simulation = readWorldSimulation(pair.world);
-  if (!simulation) throw new ClockRequestError('Legacy game requires explicit simulation initialization.');
-  if (simulation.revision !== request.expectedRevision) {
-    throw new ClockRequestError('Simulation revision conflict; reload the saved game before retrying.', 409);
-  }
-  let next;
-  try {
-    validatePair(pair, path.basename(directory));
-    next = advanceSimulationClock({ game: pair.game, world: pair.world }, request.step);
-  } catch (error) {
-    throw new ClockRequestError(error.message);
-  }
+  const next = prepareClockAdvance(pair, command, path.basename(directory));
   // Metadata belongs to the commit too: a recovered turn must invalidate client
   // asset URLs even if the process died before updating the catalog token.
   const previousTime = Date.parse(pair.meta.updatedAt);

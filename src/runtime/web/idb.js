@@ -81,21 +81,19 @@ const runTx = async (storeNames, mode, fn) => {
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(names, mode);
     let result;
+    let failure;
     transaction.oncomplete = () => resolve(result);
-    transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB transaction aborted"));
-    Promise.resolve(fn(transaction))
-      .then((value) => {
-        result = value;
-      })
-      .catch((error) => {
-        try {
-          transaction.abort();
-        } catch {
-          // already settling
-        }
-        reject(error);
-      });
+    // Reject only after rollback completes, preserving application errors (409,
+    // etc.) instead of replacing them with a generic AbortError.
+    transaction.onerror = () => { failure ??= transaction.error; };
+    transaction.onabort = () => reject(failure ?? transaction.error ?? new Error("IndexedDB transaction aborted"));
+    const abort = (error) => {
+      failure = error;
+      try { transaction.abort(); } catch { reject(error); }
+    };
+    try {
+      Promise.resolve(fn(transaction)).then((value) => { result = value; }).catch(abort);
+    } catch (error) { abort(error); }
   });
 };
 
@@ -122,6 +120,20 @@ export const idbPutPair = (storeA, valueA, storeB, valueB) =>
       promisifyRequest(tx.objectStore(storeA).put(valueA)),
       promisifyRequest(tx.objectStore(storeB).put(valueB)),
     ]));
+
+// Read, check and modify the source and its catalog projection under one
+// readwrite transaction. IndexedDB serializes overlapping scopes across tabs.
+// Both callbacks must be synchronous; no network or timers inside a transaction.
+export const idbUpdatePair = (storeA, key, storeB, update, project) =>
+  runTx([storeA, storeB], "readwrite", async (tx) => {
+    const source = tx.objectStore(storeA);
+    const next = update(await promisifyRequest(source.get(key)));
+    await Promise.all([
+      promisifyRequest(source.put(next)),
+      promisifyRequest(tx.objectStore(storeB).put(project(next))),
+    ]);
+    return next;
+  });
 
 export const idbDelete = (store, key) =>
   runTx(store, "readwrite", (tx) => promisifyRequest(tx.objectStore(store).delete(key)));
