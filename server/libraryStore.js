@@ -1,3 +1,4 @@
+import { ClockRequestError, commitSimulationClock, recoverSimulationClock } from "./simulation/clockStore.js";
 import { readWorldSimulation } from "./simulation/state.js";
 /*! Open Historia — portions (regions.geojson scenario asset + custom-map seeding) © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 import fs from "fs";
@@ -561,7 +562,15 @@ const normalizeImageContentType = (value) => {
   return normalized;
 };
 
+// Recover before reading or overwriting any top-level file of a game. The
+// recovery module writes directly via atomic renames, never through this hook.
+const recoverClockForPath = (targetPath) => {
+  const directory = path.dirname(targetPath);
+  if (path.dirname(directory) === GAMES_DIR && recoverSimulationClock(directory)) invalidateCatalogs();
+};
+
 const readJsonFile = (targetPath, fallback = null) => {
+  recoverClockForPath(targetPath);
   if (!fs.existsSync(targetPath)) {
     return fallback;
   }
@@ -575,6 +584,7 @@ const readJsonFile = (targetPath, fallback = null) => {
 };
 
 const writeJsonFile = (targetPath, value) => {
+  recoverClockForPath(targetPath);
   ensureDirectory(path.dirname(targetPath));
   fs.writeFileSync(targetPath, JSON.stringify(value, null, 2), "utf-8");
   // Any write can change what the catalogs describe, so drop them. This is the
@@ -1889,6 +1899,7 @@ const getScenarioDetails = (scenarioId) => {
 };
 
 const getGameDetails = (gameId) => {
+  recoverClockForPath(getGameMetaPath(gameId));
   const summary = getGameSummary(gameId);
 
   return {
@@ -3838,7 +3849,21 @@ const writeGameSnapshots = (gameId, snapshots) => {
   return { ok: true };
 };
 
+// Per-game addressing avoids advancing a different party after an active-game switch.
+const advanceGameClock = (gameId, request) => {
+  ensureGameStore();
+  if (!fs.existsSync(getGameMetaPath(gameId))) throw new ClockRequestError(`Game not found: ${gameId}`, 404);
+  getGameSummary(gameId);
+  try {
+    return { gameId, ...commitSimulationClock(getGameDirectory(gameId), request) };
+  } finally {
+    // A failed projection may already have durable intent and be recovered next read.
+    invalidateCatalogs();
+  }
+};
+
 export {
+  advanceGameClock,
   createGame,
   createScenario,
   deleteGame,

@@ -64,4 +64,37 @@ test('simulation checkpoints persist through the real API; invalid writes/import
   const restored = (await request('/api/runtime/json/world')).data.simulation;
   assert.deepEqual(drawRandom(restored.rng), drawRandom(simulation.rng));
   assert.deepEqual(fs.readFileSync(savedPath), savedBytes, 'import must preserve the source game');
+
+  const copyId = imported.data.game.id;
+  await request(`/api/games/${copyId}`, 'PUT', { gamePatch: { gameDate: simulation.date } });
+  const copyBefore = (await request(`/api/games/${copyId}`)).data;
+  const other = await request('/api/games', 'POST', { name: 'Other active game', scenarioId: 'default', setActive: true });
+  const otherBefore = (await request(`/api/games/${other.data.game.id}`)).data;
+  const endpoint = `/api/games/${copyId}/simulation/advance`;
+  const advanced = await request(endpoint, 'POST', { step: 'week', expectedRevision: 0 });
+  assert.equal(advanced.status, 200);
+  assert.equal(advanced.data.gameId, copyId);
+  assert.equal(advanced.data.days, 7);
+  assert.equal(advanced.data.game.gameDate, '2016-12-15');
+  assert.equal(advanced.data.world.simulation.date, advanced.data.game.gameDate);
+  assert.equal(advanced.data.world.simulation.revision, 7);
+  assert.deepEqual(advanced.data.world.simulation.rng, simulation.rng);
+  const copyAfter = (await request(`/api/games/${copyId}`)).data;
+  assert.notEqual(copyAfter.game.cacheToken, copyBefore.game.cacheToken);
+  assert.deepEqual((await request(`/api/games/${other.data.game.id}`)).data, otherBefore);
+  assert.equal((await request('/api/games')).data.activeGameId, other.data.game.id);
+
+  const competing = await Promise.all([
+    request(endpoint, 'POST', { step: 'day', expectedRevision: 7 }),
+    request(endpoint, 'POST', { step: 'day', expectedRevision: 7 }),
+  ]);
+  assert.deepEqual(competing.map((reply) => reply.status).sort(), [200, 409]);
+  const final = (await request(`/api/games/${copyId}/export`)).data;
+  assert.equal(final.data.game.gameDate, '2016-12-16');
+  assert.equal(final.data.world.simulation.revision, 8);
+  const unchanged = (await request(`/api/games/${copyId}`)).data;
+  assert.equal((await request(endpoint, 'POST', { step: 'month', expectedRevision: 8, world: {} })).status, 400);
+  assert.deepEqual((await request(`/api/games/${copyId}`)).data, unchanged);
+  assert.equal((await request(`/api/games/${other.data.game.id}/simulation/advance`, 'POST', { step: 'day', expectedRevision: 0 })).status, 400);
+  assert.equal((await request('/api/games/missing-clock-game/simulation/advance', 'POST', { step: 'day', expectedRevision: 0 })).status, 404);
 });

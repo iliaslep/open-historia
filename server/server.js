@@ -1,3 +1,4 @@
+import { ClockRequestError } from "./simulation/clockStore.js";
 /*! Open Historia — portions (CORS, AI relay, shutdown endpoint, hub proxy) © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 import crypto from "crypto";
 import express from "express";
@@ -8,6 +9,7 @@ import os from "os";
 import path from "path";
 import url from "url";
 import {
+  advanceGameClock,
   createGame,
   createScenario,
   deleteGame,
@@ -672,6 +674,16 @@ app.get("/api/games", (_req, res) => {
     res.json(getGameCatalog());
   } catch (error) {
     sendError(res, 500, error);
+  }
+});
+
+// Local calculation only: the client supplies a command and expected revision,
+// never an arbitrary replacement world. UI activation is a separate change.
+app.post("/api/games/:gameId/simulation/advance", jsonParser, (req, res) => {
+  try {
+    res.json(advanceGameClock(req.params.gameId, req.body));
+  } catch (error) {
+    sendError(res, error instanceof ClockRequestError ? error.status : 500, error);
   }
 });
 
