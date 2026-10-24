@@ -12,6 +12,8 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import test from "node:test";
+import { createSimulationState } from "../../../server/simulation/state.js";
+import { drawRandom } from "../../../server/simulation/random.js";
 
 const db = new Map();
 globalThis.__ohWebStoreTestDb = db;
@@ -82,6 +84,36 @@ const ok = (reply) => {
   assert.ok(reply.status < 300, `HTTP ${reply.status}: ${JSON.stringify(reply.data)}`);
   return reply.data;
 };
+
+test("web game checkpoints survive runtime writes and export/import with the next RNG draw intact", async () => {
+  await reset();
+  const gameId = ok(await games("POST", "", { name: "Simulation", scenarioId: "default", setActive: true })).game.id;
+  const runtime = (method, body) => call(store.handleRuntimeJson, method, "json/world", body);
+  const world = ok(await runtime("GET"));
+  assert.equal(Object.hasOwn(world, "simulation"), false);
+  const simulation = createSimulationState({ scenarioId: "default", date: "2016-12-08", seed: 42 });
+  for (let i = 0; i < 13; i++) simulation.rng = drawRandom(simulation.rng).rng;
+  ok(await runtime("PUT", { ...world, simulation }));
+  const bundle = ok(await games("GET", `${gameId}/export`));
+  assert.deepEqual(bundle.data.world.simulation, simulation);
+
+  for (const bad of [null, { ...simulation, schemaVersion: 99 }, { ...simulation, rulesVersion: 99 },
+    { ...simulation, rng: { ...simulation.rng, state: -1 } }]) {
+    const before = structuredClone(db);
+    const invalidWorld = { ...world, simulation: bad };
+    assert.equal((await runtime("PUT", invalidWorld)).status, 400);
+    assert.equal((await games("POST", "import", { ...bundle, data: { ...bundle.data, world: invalidWorld } })).status, 400);
+    assert.equal((await games("PUT", gameId, { name: "Must not change", worldPatch: { simulation: bad } })).status, 400);
+    assert.deepEqual(db, before, "invalid data must not change any stored record");
+  }
+
+  const copy = ok(await games("POST", "import", bundle));
+  assert.notEqual(copy.game.id, gameId);
+  ok(await games("PUT", "active", { gameId: copy.game.id }));
+  const restored = ok(await runtime("GET"));
+  assert.deepEqual(restored.simulation, simulation);
+  assert.deepEqual(drawRandom(restored.simulation.rng), drawRandom(simulation.rng));
+});
 
 const REGIONS = {
   type: "FeatureCollection",

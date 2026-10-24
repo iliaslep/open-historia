@@ -1,3 +1,4 @@
+import { readWorldSimulation } from "../../../server/simulation/state.js";
 /*! Open Historia — web-mode library/scenario/game/runtime store © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 // Browser (IndexedDB) port of server/libraryStore.js. Backs /api/library,
 // /api/scenarios*, /api/games*, /api/runtime/json*, /api/runtime/pmtiles* in web
@@ -710,6 +711,7 @@ const writeRuntimeJsonAsset = (assetKey, value) =>
   serializeWrite(() => writeRuntimeJsonAssetLocked(assetKey, value));
 
 const writeRuntimeJsonAssetLocked = async (assetKey, value) => {
+  if (assetKey === "world") readWorldSimulation(value);
   if (!JSON_ASSET_KEYS.includes(assetKey) && !OPTIONAL_JSON_ASSET_KEYS.includes(assetKey) && !RUNTIME_ONLY_JSON_ASSET_KEYS.includes(assetKey)) {
     throw new Error(`Unsupported JSON asset key: ${assetKey}`);
   }
@@ -844,6 +846,8 @@ const pickHubProvenance = (body) => Object.fromEntries(
 );
 
 const updateScenario = async (id, body = {}) => {
+  readWorldSimulation(body.world);
+  readWorldSimulation(body.worldPatch);
   const record = await getScenario(id);
   if (!record) throw new Error(`Scenario not found: ${id}`);
   // A write that only records hub bookkeeping is not an edit: no updatedAt, and
@@ -981,6 +985,8 @@ const createGame = async (body = {}) => {
 };
 
 const updateGame = async (id, body = {}) => {
+  readWorldSimulation(body.world);
+  readWorldSimulation(body.worldPatch);
   const record = await getGame(id);
   if (!record) throw new Error(`Game not found: ${id}`);
   writeGameMeta(record, pickMetaUpdates(body));
@@ -1226,6 +1232,7 @@ const importScenarioBundle = async (bundle) => {
   if (!bundle || typeof bundle !== "object" || !isScenarioBundleSchema(bundle.schema)) throw new Error("Unsupported scenario bundle.");
   // A file that declares its map's projection is laid out here, once
   // (mapProjection.js); any other bundle passes through untouched.
+  readWorldSimulation(bundle.data?.world);
   bundle = layOutScenarioBundle(bundle);
   // Hub provenance the community tab attaches to a direct import — stamped
   // LAST so the import's own meta writes don't clear it.
@@ -1262,6 +1269,7 @@ const updateScenarioFromBundle = async (scenarioId, bundle) => {
   if (!bundle || typeof bundle !== "object" || !isScenarioBundleSchema(bundle.schema)) throw new Error("Unsupported scenario bundle.");
   // A file that declares its map's projection is laid out here, once
   // (mapProjection.js); any other bundle passes through untouched.
+  readWorldSimulation(bundle.data?.world);
   bundle = layOutScenarioBundle(bundle);
   const existing = await getScenario(scenarioId);
   if (!existing) throw new Error(`Scenario not found: ${scenarioId}`);
@@ -1621,6 +1629,7 @@ const importGameBundle = async (bundle) => {
 
   const metaIn = bundle.game && typeof bundle.game === "object" ? bundle.game : {};
   const data = bundle.data && typeof bundle.data === "object" ? bundle.data : {};
+  readWorldSimulation(data.world);
   const ref = bundle.scenarioRef && typeof bundle.scenarioRef === "object" ? bundle.scenarioRef : {};
   const scenarioId = trimmed(ref.scenarioId) || DEFAULT_SCENARIO_ID;
 

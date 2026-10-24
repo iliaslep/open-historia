@@ -1,3 +1,4 @@
+import { readWorldSimulation } from "../../server/simulation/state.js";
 /*! Open Historia — portions (troop deployments + era troop types) © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 import { JSON_URLS, primeJson, readJson, reportPerfOperation, writeJson } from "./assets.js";
 import { applyGroupOps, normalizeGroupAreas, normalizeGroupOp, normalizeGroups } from "./groups.js";
@@ -3496,6 +3497,7 @@ const withFormerSceneKeyMoved = (world) => {
 
 export const normalizeWorldState = (world) => {
   const nextWorld = withFormerSceneKeyMoved(world && typeof world === "object" ? world : {});
+  const simulation = readWorldSimulation(nextWorld);
   const polityOverrides = Object.fromEntries(
     Object.entries(nextWorld.polityOverrides ?? {})
       .map(([key, value]) => [key, normalizePolityOverride(key, value)])
@@ -3615,6 +3617,7 @@ export const normalizeWorldState = (world) => {
   return {
     ...WORLD_DEFAULTS,
     ...nextWorld,
+    ...(simulation ? { simulation } : {}),
     countryTags,
     countryStats,
     actionSuggestions: normalizeActionSuggestions(nextWorld.actionSuggestions),

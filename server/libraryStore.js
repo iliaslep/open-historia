@@ -1,3 +1,4 @@
+import { readWorldSimulation } from "./simulation/state.js";
 /*! Open Historia — portions (regions.geojson scenario asset + custom-map seeding) © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 import fs from "fs";
 import { normalizeFeatureOverrides, normalizeFeatureSettings } from "./gameFeatures.js";
@@ -2198,6 +2199,8 @@ const pickHubProvenance = (body) =>
   Object.fromEntries(HUB_PROVENANCE_KEYS.filter((key) => Object.hasOwn(body ?? {}, key)).map((key) => [key, body[key]]));
 
 const updateScenario = (scenarioId, body = {}) => {
+  readWorldSimulation(body?.world);
+  readWorldSimulation(body?.worldPatch);
   const {
     accentColor,
     countryNameOverrides,
@@ -2326,6 +2329,8 @@ const updateGame = (
     worldPatch,
   } = {},
 ) => {
+  readWorldSimulation(world);
+  readWorldSimulation(worldPatch);
   ensureGameStore();
 
   if (!fs.existsSync(getGameDirectory(gameId))) {
@@ -3091,6 +3096,7 @@ const readRuntimeJsonAsset = (assetKey) => {
 // route's Prefer: return=minimal): the rollback archive is written whole every
 // turn, 8-21 MB on a long game, and nothing on the page needs it echoed.
 const writeRuntimeJsonAsset = (assetKey, value, { readBack = true } = {}) => {
+  if (assetKey === "world") readWorldSimulation(value);
   ensureGameStore();
 
   // Custom region/city geometry is scenario-scoped, and readRuntimeJsonAsset
@@ -3424,6 +3430,7 @@ const importScenarioBundle = (bundle, { setSelected = true } = {}) => {
 
   // A file that declares its map's projection is laid out here, once
   // (mapProjection.js); any other bundle passes through untouched.
+  readWorldSimulation(bundle.data?.world);
   bundle = layOutScenarioBundle(bundle);
 
   const scenario = bundle.scenario && typeof bundle.scenario === "object" ? bundle.scenario : {};
@@ -3535,6 +3542,7 @@ const updateScenarioFromBundle = (scenarioId, bundle) => {
 
   // A file that declares its map's projection is laid out here, once
   // (mapProjection.js); any other bundle passes through untouched.
+  readWorldSimulation(bundle.data?.world);
   bundle = layOutScenarioBundle(bundle);
   if (!fs.existsSync(getScenarioMetaPath(scenarioId))) {
     throw new Error(`Scenario not found: ${scenarioId}`);
@@ -3759,6 +3767,7 @@ const importGameBundle = (bundle) => {
 
   const meta = bundle.game && typeof bundle.game === "object" ? bundle.game : {};
   const data = bundle.data && typeof bundle.data === "object" ? bundle.data : {};
+  readWorldSimulation(data.world);
   const ref = bundle.scenarioRef && typeof bundle.scenarioRef === "object" ? bundle.scenarioRef : {};
   const scenarioId = String(ref.scenarioId ?? "").trim() || DEFAULT_SCENARIO_ID;
 
