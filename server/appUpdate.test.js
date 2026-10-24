@@ -102,16 +102,65 @@ test("restart only installs an update that finished downloading", async () => {
   assert.deepEqual(updater.calls, ["restart"]);
 });
 
-test("the manifest tells the page which of the two updates it can offer", async () => {
-  // autoUpdate is what the banner branches on: true installs in place, false keeps
-  // opening the installer download. It is answered from this process, so it holds
-  // even when the GitHub fetch behind the rest of the payload fails.
-  globalThis.__ohAutoUpdate = fake().handle;
-  const on = await (await fetch(`${base}/api/app-update?track=desktop`)).json();
-  assert.equal(on.autoUpdate, true);
+test("the manifest reports local capability independently of the remote manifest", async (t) => {
+  const clientFetch = globalThis.fetch;
+  let remoteMode = "offline";
+  let remoteCalls = 0;
+  const clock = Date.now();
+  let elapsed = 0;
+  t.mock.method(Date, "now", () => clock + elapsed);
+  t.mock.method(globalThis, "fetch", async (input, options) => {
+    if (String(input).startsWith("https://github.com/")) {
+      remoteCalls += 1;
+      if (remoteMode === "offline") throw new Error("network unavailable");
+      if (remoteMode === "http-error") return new Response("unavailable", { status: 503 });
+      if (remoteMode === "invalid-json") return new Response("not JSON");
+      return Response.json({ build: "release-123", linux: "https://example.com/app.deb" });
+    }
+    return clientFetch(input, options);
+  });
+  t.after(() => { delete globalThis.__ohAutoUpdate; });
+  const manifest = async (track = "desktop") =>
+    (await clientFetch(`${base}/api/app-update?track=${track}`)).json();
 
-  delete globalThis.__ohAutoUpdate;
-  // The reply is cached for three minutes, so ask on a track that has not been hit.
-  const off = await (await fetch(`${base}/api/app-update?track=stable`)).json();
-  assert.equal(off.autoUpdate ?? false, false);
+  for (const mode of ["offline", "http-error", "invalid-json"]) {
+    await t.test(`local capability survives ${mode}`, async () => {
+      remoteMode = mode;
+      globalThis.__ohAutoUpdate = fake().handle;
+      assert.deepEqual(await manifest(), { autoUpdate: true });
+      delete globalThis.__ohAutoUpdate;
+      assert.deepEqual(await manifest(), { autoUpdate: false });
+    });
+  }
+
+  await t.test("a cached manifest does not freeze local capability", async () => {
+    remoteMode = "success";
+    globalThis.__ohAutoUpdate = fake().handle;
+    const fresh = await manifest();
+    assert.equal(fresh.autoUpdate, true);
+    assert.equal(fresh.buildId, "release-123");
+    const callsAfterFill = remoteCalls;
+    delete globalThis.__ohAutoUpdate;
+    const cached = await manifest();
+    assert.equal(cached.autoUpdate, false);
+    assert.equal(cached.buildId, fresh.buildId);
+    assert.equal(remoteCalls, callsAfterFill, "a fresh cache must avoid another remote request");
+  });
+
+  await t.test("an expired manifest is still useful offline with current capability", async () => {
+    elapsed = 3 * 60 * 1000 + 1;
+    remoteMode = "offline";
+    globalThis.__ohAutoUpdate = fake().handle;
+    const stale = await manifest();
+    assert.equal(stale.buildId, "release-123");
+    assert.equal(stale.autoUpdate, true);
+    delete globalThis.__ohAutoUpdate;
+    assert.equal((await manifest()).autoUpdate, false);
+  });
+
+  await t.test("an unknown track remains empty without a remote request", async () => {
+    const callsBefore = remoteCalls;
+    assert.deepEqual(await manifest("unknown"), {});
+    assert.equal(remoteCalls, callsBefore);
+  });
 });

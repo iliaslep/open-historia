@@ -502,15 +502,17 @@ app.get("/api/app-update", async (req, res) => {
     res.json({}); // unknown track -> no update info, never an error
     return;
   }
+  // Capability belongs to this process, even offline or when a manifest is cached.
+  const respond = (manifest = {}) => res.json({ ...manifest, autoUpdate: Boolean(desktopUpdater()) });
   const cached = appUpdateCache.get(track);
   if (cached && Date.now() - cached.at < APP_UPDATE_TTL_MS) {
-    res.json(cached.data);
+    respond(cached.data);
     return;
   }
   try {
     const response = await fetch(manifestUrl, { signal: AbortSignal.timeout(6000) });
     if (!response.ok) {
-      res.json(cached ? cached.data : {}); // stale-if-error, else empty
+      respond(cached ? cached.data : {}); // stale manifest or local capability only
       return;
     }
     const raw = await response.json();
@@ -527,15 +529,11 @@ app.get("/api/app-update", async (req, res) => {
       // localhost page — and it is absent everywhere else, so no banner appears.
       current: String(process.env.OH_DESKTOP_BUILD || ""),
       download: str(raw && raw[{ win32: "windows", darwin: "mac", linux: "linux" }[process.platform]]),
-      // True when this app can install the update itself. False on a build that
-      // cannot (unsigned macOS, an unpackaged dev run), and the banner then offers
-      // the download link exactly as it did before.
-      autoUpdate: Boolean(desktopUpdater()),
     };
     appUpdateCache.set(track, { at: Date.now(), data });
-    res.json(data);
+    respond(data);
   } catch {
-    res.json(cached ? cached.data : {}); // offline / timeout -> fail-open
+    respond(cached ? cached.data : {}); // offline / timeout keeps local capability
   }
 });
 
