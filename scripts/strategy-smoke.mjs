@@ -7,7 +7,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const pageUrl = new URL(process.argv[2] || 'http://127.0.0.1:5173/?strategy=1');
+const chatMode = process.argv.includes('--chats');
+const chatFixture = chatMode ? await (await import('./strategy-chat-fixture.mjs')).startChatFixture() : null;
+const pageUrl = new URL(chatFixture ? `${chatFixture.origin}/?strategy=1` : process.argv[2] || 'http://127.0.0.1:5173/?strategy=1');
 pageUrl.searchParams.set('mapFillProbe', '1');
 const origin = pageUrl.href;
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'oh-strategy-ui-'));
@@ -70,6 +72,65 @@ try {
   await click('Новая партия');
   await click('Создать партию');
   await wait(`fetch('/api/games').then(r=>r.json()).then(c=>c.activeGameId!==${JSON.stringify(previousId)}&&document.querySelector('.strategy')?.dataset.gameId===c.activeGameId)`);
+  if (chatMode) {
+    const write = async text => {
+      await wait(`document.querySelector('.strategy-conversation textarea')&&!document.querySelector('.strategy-conversation textarea').disabled`);
+      await evaluate(`(()=>{const t=document.querySelector('.strategy-conversation textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(t,${JSON.stringify(text)});t.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+      await click('Отправить ·');
+    };
+    await click('Чат решений');
+    const initial = await saved();
+    await write('Предлагаю повысить налоговую нагрузку до 40 %');
+    await wait(`document.querySelector('.strategy-proposal')?.textContent.includes('ещё не исполнено')`);
+    assert.equal((await saved()).data.world.strategy.countries.Germany.tax, 3800);
+    assert.equal((await saved()).data.world.strategy.countries.Germany.capital, initial.data.world.strategy.countries.Germany.capital);
+    await click('Принять и выполнить');
+    await wait(`document.querySelector('.strategy-proposal')?.textContent.includes('Исполнено движком')`);
+    await click('▶ 7 дней');
+    await wait(`document.querySelector('.strategy time')?.textContent.includes('15 декабря')`);
+    assert.equal((await saved()).data.world.strategy.countries.Germany.tax, 4000);
+    await click('Дипломатия');
+    await write('Предлагаем помощь Франции 500 млн евро');
+    await wait(`document.querySelector('.strategy-proposal')?.textContent.includes('500')`);
+    const offered = await saved();
+    await click('Принять условия');
+    await wait(`document.querySelector('.strategy-proposal')?.textContent.includes('Исполнено движком')`);
+    const applied = await saved();
+    assert.equal(applied.data.world.strategy.countries.Germany.treasury, offered.data.world.strategy.countries.Germany.treasury - 500);
+    assert.equal(applied.data.world.strategy.countries.France.treasury, offered.data.world.strategy.countries.France.treasury + 500);
+    await evaluate(`(()=>{const s=Array.from(document.querySelectorAll('.strategy section label select')).find(s=>Array.from(s.options).some(o=>o.value==='Russia'));s.value='Russia';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await wait(`document.querySelector('.strategy-conversation h2')?.textContent.includes('Россия')`);
+    await write('Начнём отдельные переговоры');
+    await wait(`document.querySelector('.strategy-transcript')?.textContent.includes('российской делегацией')`);
+    await click('Чат решений');
+    await write('Верни сломанный формат');
+    await wait(`document.querySelector('.strategy-conversation [role=alert]')?.textContent.includes('неподдерживаемое')`);
+    const bad = await saved();
+    assert.deepEqual(bad.data.world.strategy, applied.data.world.strategy);
+    await write('Обсудим дальнейшие решения');
+    await wait(`document.querySelector('.strategy-transcript')?.textContent.includes('Уточним дальнейшие')`);
+    const progressed = await saved();
+    await click('Экспорт партии');
+    const exported = path.join(downloads, 'strategy-2016-12-15.json');
+    for (let i = 0; i < 100 && !fs.existsSync(exported); i++) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(fs.existsSync(exported));
+    assert.deepEqual(JSON.parse(fs.readFileSync(exported, 'utf8')).data.chat, progressed.data.chat);
+    const document = await cdp('DOM.getDocument', {}, session);
+    const { nodeId } = await cdp('DOM.querySelector', { nodeId: document.root.nodeId, selector: '.strategy input[type=file]' }, session);
+    await cdp('DOM.setFileInputFiles', { nodeId, files: [exported] }, session);
+    await wait(`document.querySelector('.strategy')?.dataset.gameId && document.querySelector('.strategy').dataset.gameId!==${JSON.stringify(progressed.id)}`);
+    const reloaded = new Promise(resolve => { pageLoaded = resolve; }); await cdp('Page.reload', {}, session); await reloaded;
+    await wait(`document.querySelector('.strategy time')?.textContent.includes('15 декабря')`);
+    assert.deepEqual((await saved()).data.chat, progressed.data.chat);
+    await click('Дипломатия');
+    await wait(`document.querySelector('.strategy-transcript')?.textContent.includes('Французская делегация')`);
+    await wait(`window.__OH_MAP_READINESS__?.polities && !window.__OH_MAP_READINESS__.polities.failed && window.__OH_MAP_READINESS__.idleAt>=window.__OH_MAP_READINESS__.polities.at`);
+    const screenshot = await cdp('Page.captureScreenshot', { format: 'png' }, session);
+    fs.writeFileSync('/tmp/strategy-chat-smoke.png', Buffer.from(screenshot.data, 'base64'));
+    assert.equal(aiCalls, 0, 'the provider is a synthetic fixture, never an external service');
+    console.log('PASS (synthetic OAuth/Responses provider): decisions chat, real seven-day tax reform, diplomatic aid both balances, isolated country threads, invalid response, UI export/import/reload, persisted receipts. Live account not tested.');
+  } else {
+  await click('Экономика');
   await click('Инфраструктура');
   await wait(`Array.from(document.querySelectorAll('.strategy button')).some(b=>b.textContent.startsWith('▶ 7 дней')&&!b.disabled)`);
   const initial = await saved();
@@ -171,9 +232,11 @@ try {
   fs.writeFileSync('/tmp/strategy-smoke.png', Buffer.from(screenshot.data, 'base64'));
   console.log('PASS (remote HTTPS blocked): create, investment, week, treaty, calendar month, NPCs, UI export/import, reload, ChatGPT fallback/error visibility, intelligence, mobilization, sanctions, war, rendered territory color, sovereignty, peace; AI calls:', aiCalls);
   console.log('Screenshot: /tmp/strategy-smoke.png');
+  }
 } finally {
   if (browser.exitCode === null && browser.signalCode === null) {
     const exited = once(browser, 'exit'); browser.kill('SIGTERM'); await exited;
   }
   fs.rmSync(profile, { recursive: true, force: true });
+  await chatFixture?.close();
 }

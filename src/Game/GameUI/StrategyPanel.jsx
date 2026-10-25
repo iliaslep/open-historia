@@ -4,6 +4,7 @@ import { dailyBudget } from '../../../server/simulation/strategy.js';
 import { saveTextToDisk } from '../../runtime/saveFile.js';
 import { acceptFor } from '../../runtime/fileAccept.js';
 import ChatGPTPanel from './ChatGPTPanel.jsx';
+import StrategyChatPanel from './StrategyChatPanel.jsx';
 import './strategy.css';
 
 const money = (value) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(value);
@@ -26,7 +27,7 @@ export default function StrategyPanel() {
   const [tax, setTax] = useState(38);
   const [spending, setSpending] = useState(35);
   const [aid, setAid] = useState(500);
-  const [tab, setTab] = useState('economy');
+  const [tab, setTab] = useState('decisions');
   const [compact, setCompact] = useState(false);
   const [seed, setSeed] = useState(20161208);
   const [startDate, setStartDate] = useState('2016-12-08');
@@ -51,13 +52,16 @@ export default function StrategyPanel() {
   const strategy = data?.world?.strategy;
   const player = strategy?.countries?.[strategy.player];
   const native = Boolean(strategy && data?.game?.simulationMode === 'native');
+  const acceptResult = async (result) => {
+    setData(current => ({ ...current, game: result.game, world: result.world, ...(result.chat ? { chat: result.chat } : {}) }));
+    await refreshLibraryCatalog({ force: true });
+    window.dispatchEvent(new CustomEvent('oh:active-game-changed', { detail: { gameId: activeGameId } }));
+  };
   const command = (operation, body) => run(async () => {
     const result = await api(`/api/games/${encodeURIComponent(activeGameId)}/simulation/${operation}`, {
       ...body, expectedRevision: data.world.simulation.revision,
     });
-    setData({ ...data, game: result.game, world: result.world });
-    await refreshLibraryCatalog({ force: true });
-    window.dispatchEvent(new CustomEvent('oh:active-game-changed', { detail: { gameId: activeGameId } }));
+    await acceptResult(result);
   });
   const decision = (type, value) => command('decision', { type, ...(value !== undefined ? { value } : {}), target });
   const newGame = () => run(async () => {
@@ -103,7 +107,8 @@ export default function StrategyPanel() {
         <p className="strategy-status">Пауза между ходами · изменения сохраняются автоматически</p>
         <div className="strategy-metrics"><span>Казна<strong>{money(player.treasury)} млн €</strong></span><span>Бюджет/день<strong className={budget.balance < 0 ? 'negative' : ''}>{budget.balance >= 0 ? '+' : ''}{money(budget.balance)} млн €</strong></span>
           <span>Стабильность<strong>{player.stability}/100</strong></span><span>Поддержка решений<strong>{player.capital}/100</strong></span></div>
-        <nav className="strategy-tabs">{[['economy', 'Экономика'], ['diplomacy', 'Дипломатия'], ['security', 'Безопасность'], ['cabinet', 'Кабинет'], ['history', 'Сводки'], ['chatgpt', 'ChatGPT']].map(([id, text]) => <button key={id} aria-pressed={tab === id} onClick={() => setTab(id)}>{text}</button>)}</nav>
+        <nav className="strategy-tabs">{[['decisions', 'Чат решений'], ['economy', 'Экономика'], ['diplomacy', 'Дипломатия'], ['security', 'Безопасность'], ['cabinet', 'Кабинет'], ['history', 'Сводки'], ['chatgpt', 'ChatGPT']].map(([id, text]) => <button key={id} aria-pressed={tab === id} onClick={() => setTab(id)}>{text}</button>)}</nav>
+        {tab === 'decisions' && <StrategyChatPanel key={`decisions-${activeGameId}`} gameId={activeGameId} channel="decisions" chats={data.chat} revision={data.world.simulation.revision} label={label} busy={busy} onBusy={setBusy} onResult={acceptResult} onRefresh={refresh} onApply={messageId => command('chat-apply', { messageId })} onSettings={() => setTab('chatgpt')} />}
         {tab === 'chatgpt' && <ChatGPTPanel key={activeGameId} gameId={activeGameId} target={target} />}
         {tab === 'economy' && <section><h2>Бюджет и развитие</h2><dl><dt>Годовой ВВП, игровая оценка</dt><dd>{money(player.gdp)} млн €</dd><dt>Государственный долг</dt><dd>{money(player.debt)} млн € ({Math.round(player.debt / player.gdp * 100)} % ВВП)</dd><dt>Доходы / расходы в день</dt><dd>{money(budget.revenue)} / {money(budget.services + budget.interest + budget.military)} млн €</dd><dt>Промышленность / энергетика</dt><dd>{player.industry} / {player.energy}</dd><dt>Безработица, модель</dt><dd>{player.unemployment} %</dd></dl>
           <label>Налоговая нагрузка: {tax} % ВВП (сейчас {player.tax / 100} %)<input type="range" min="20" max="60" value={tax} onChange={(e) => setTax(Number(e.target.value))} /></label><button disabled={busy} onClick={() => decision('tax', tax)}>Внести налоговую реформу · 7 дней</button>
@@ -111,8 +116,9 @@ export default function StrategyPanel() {
           <button disabled={busy} onClick={() => decision('industry')}>Инфраструктура · {money(Math.round(player.gdp * 0.005))} млн € · 30 дней</button>
           <h3>Процессы</h3>{strategy.projects.filter((p) => p.owner === strategy.player).map((p, i) => <p key={i}>{({ tax: 'Налоговая реформа', spending: 'Бюджетная реформа', industry: 'Инфраструктура', mobilize: 'Подготовка резервов' })[p.kind]} — {p.due}</p>)}
         </section>}
-        {['diplomacy', 'security'].includes(tab) && <section><label>Государство<select value={target} onChange={(e) => setTarget(e.target.value)}>{Object.keys(strategy.countries).filter((id) => id !== strategy.player).sort().map((id) => <option key={id} value={id}>{label(id)}</option>)}</select></label>
+        {['diplomacy', 'security'].includes(tab) && <section><label>Государство<select value={target} disabled={busy} onChange={(e) => setTarget(e.target.value)}>{Object.keys(strategy.countries).filter((id) => id !== strategy.player).sort().map((id) => <option key={id} value={id}>{label(id)}</option>)}</select></label>
           <p>Отношения: {player.relations[target] || 0}/100 · {strategy.wars.some((w) => [w.a, w.b].includes(strategy.player) && [w.a, w.b].includes(target)) ? 'Военный конфликт' : 'Мир'}</p>
+          {tab === 'diplomacy' && <StrategyChatPanel key={`diplomacy-${activeGameId}-${target}`} gameId={activeGameId} channel="diplomacy" target={target} chats={data.chat} revision={data.world.simulation.revision} label={label} busy={busy} onBusy={setBusy} onResult={acceptResult} onRefresh={refresh} onApply={messageId => command('chat-apply', { messageId })} onSettings={() => setTab('chatgpt')} />}
           {tab === 'diplomacy' ? <><button disabled={busy} onClick={() => decision('trade')}>Предложить торговое соглашение · 365 дней</button><label>Помощь, млн €<input type="number" min="1" max="1000000" value={aid} onChange={(e) => setAid(Number(e.target.value))} /></label><button disabled={busy} onClick={() => decision('aid', aid)}>Перечислить помощь</button><button disabled={busy} onClick={() => decision('sanctions')}>Ввести санкции</button><button disabled={busy} onClick={() => decision('peace')}>Предложить перемирие</button><h3>Действующие договоры</h3>{strategy.treaties.filter((t) => t.a === strategy.player || t.b === strategy.player).map((t, i) => <p key={i}>{label(t.a)} — {label(t.b)} · до {t.until}</p>)}</>
             : <><p>Боеготовность: {player.readiness}/100. Война увеличивает бюджетные расходы и истощает силы. {Object.keys(strategy.regions || {}).length ? "Наступления меняют контроль над соседними регионами карты, сохраняя юридический суверенитет. Морские десанты не моделируются." : "У этого сохранения нет графа территории. Создайте новую партию для наступлений на карте."}</p><button disabled={busy} onClick={() => decision('mobilize')}>Подготовить резервы · 14 дней</button><button disabled={busy} onClick={() => decision('intel')}>Сбор разведывательных сведений · 7 дней</button><button disabled={busy} onClick={() => decision('war')}>Начать военную операцию</button><h3>Разведывательные оценки</h3>{strategy.reports.slice().reverse().map((r, i) => <p key={i}>{r.date} · {label(r.target)} · доверие {r.confidence} %<br />{r.text}</p>)}</>}
         </section>}

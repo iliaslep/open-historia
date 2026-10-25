@@ -1,4 +1,5 @@
 import { readWorldSimulation } from "../../../server/simulation/state.js";
+import { validateNativeChats } from '../../../server/simulation/conversations.js';
 import { ClockRequestError, prepareSimulationOperation } from "../../../server/simulation/clockCommand.js";
 /*! Open Historia — web-mode library/scenario/game/runtime store © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 // Browser (IndexedDB) port of server/libraryStore.js. Backs /api/library,
@@ -1639,7 +1640,8 @@ const importGameBundle = async (bundle) => {
 
   const metaIn = bundle.game && typeof bundle.game === "object" ? bundle.game : {};
   const data = bundle.data && typeof bundle.data === "object" ? bundle.data : {};
-  readWorldSimulation(data.world);
+  const simulation = readWorldSimulation(data.world);
+  if (simulation?.rulesVersion === 2) validateNativeChats(data.chat ?? [], data.world.strategy, simulation.date);
   const ref = bundle.scenarioRef && typeof bundle.scenarioRef === "object" ? bundle.scenarioRef : {};
   const scenarioId = trimmed(ref.scenarioId) || DEFAULT_SCENARIO_ID;
 
@@ -1715,9 +1717,10 @@ const advanceGameClock = (id, request, operation = "advance") => serializeWrite(
     if (!current) throw new ClockRequestError(`Game not found: ${id}`, 404);
     const next = prepareSimulationOperation({
       game: jsonAsset(current, "game"), world: jsonAsset(current, "world"), meta: current.meta ?? {},
+      ...(['chat-record', 'chat-apply'].includes(operation) ? { chat: jsonAsset(current, "chat") } : {}),
     }, operation, request, id, context);
     result = next;
-    current.json = { ...current.json, game: next.game, world: next.world };
+    current.json = { ...current.json, game: next.game, world: next.world, ...('chat' in next ? { chat: next.chat } : {}) };
     const previousTime = Date.parse(current.meta.updatedAt);
     const updatedAt = new Date(Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0)).toISOString();
     current.meta = { ...current.meta, updatedAt };
@@ -1725,6 +1728,7 @@ const advanceGameClock = (id, request, operation = "advance") => serializeWrite(
   }, projectGameMeta);
   return {
     gameId: id, game: jsonAsset(record, "game"), world: jsonAsset(record, "world"),
+    ...(['chat-record', 'chat-apply'].includes(operation) ? { chat: jsonAsset(record, "chat") } : {}),
     days: result.days,
   };
 });
@@ -1741,7 +1745,7 @@ export const handleGames = async ({ method, segments, body, rawBody, contentType
     if (id === "import" && method === "POST") return jsonResponse(await importGameBundle(body ?? {}), 201);
 
     const sub = segments[1];
-    if (sub === "simulation" && ["advance", "start", "decision"].includes(segments[2]) && segments.length === 3 && method === "POST") {
+    if (sub === "simulation" && ["advance", "start", "decision", "chat-record", "chat-apply"].includes(segments[2]) && segments.length === 3 && method === "POST") {
       try {
         return jsonResponse(await advanceGameClock(id, body, segments[2]));
       } catch (error) {

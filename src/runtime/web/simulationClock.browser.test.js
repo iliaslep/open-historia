@@ -224,4 +224,28 @@ test('web clock commits across two Chromium tabs and rolls back failed IndexedDB
     assert.equal(result.saved.json.world.strategy.countries.Germany.tax, 4500);
     assert.equal(result.saved.json.game.gameDate, '2016-12-15');
   });
+  await t.test('chat, costs and receipts commit together across two tabs; malformed imports preserve the catalog', async () => {
+    const offered = await evaluate(first, `(async()=>{
+      const r=await library.handleGames({method:'POST',segments:['native','simulation','chat-record'],body:{expectedRevision:8,channel:'diplomacy',target:'France',prompt:'Помощь 500 млн евро',response:{reply:'Обсудим помощь.',stance:'accept',actions:[{type:'aid',target:'France',value:500}]}}});
+      return {status:r.status,data:await r.json()};
+    })()`);
+    assert.equal(offered.status, 200);
+    const messageId = offered.data.chat.find(t => t.engine === 'native-strategy-v1').messages.at(-1).id;
+    const expression = `(async()=>{const r=await library.handleGames({method:'POST',segments:['native','simulation','chat-apply'],body:{expectedRevision:9,messageId:${JSON.stringify(messageId)}}});return {status:r.status,data:await r.json()};})()`;
+    const replies = await Promise.all([evaluate(first, expression), evaluate(second, expression)]);
+    assert.deepEqual(replies.map(r => r.status).sort(), [200,409]);
+    const saved = await evaluate(first, `idb.idbGet(idb.STORES.games,'native')`);
+    assert.equal(saved.json.world.strategy.countries.Germany.treasury, offered.data.world.strategy.countries.Germany.treasury - 500);
+    assert.equal(saved.json.chat.find(t => t.engine === 'native-strategy-v1').messages.at(-1).proposal.status, 'applied');
+    const imported = await evaluate(first, `(async()=>{
+      const e=await library.handleGames({method:'GET',segments:['native','export']});const bundle=await e.json();
+      const valid=await library.handleGames({method:'POST',segments:['import'],body:bundle});const data=await valid.json();
+      const before={games:await idb.idbGetAll(idb.STORES.games),meta:await idb.idbGetAll(idb.STORES.gameMeta)};
+      bundle.data.chat.find(t=>t.engine==='native-strategy-v1').messages[0].time='9999-01-01';
+      const bad=await library.handleGames({method:'POST',segments:['import'],body:bundle});
+      const after={games:await idb.idbGetAll(idb.STORES.games),meta:await idb.idbGetAll(idb.STORES.gameMeta)};return {status:valid.status,chat:data.data.chat,bad:bad.status,before,after};
+    })()`);
+    assert.equal(imported.status, 201); assert.deepEqual(imported.chat, saved.json.chat);
+    assert.equal(imported.bad, 400); assert.deepEqual(imported.before, imported.after);
+  });
 });

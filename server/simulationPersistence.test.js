@@ -138,4 +138,22 @@ test('simulation checkpoints persist through the real API; invalid writes/import
   assert.equal(restoredNative.status, 201);
   assert.equal(restoredNative.data.game.simulationMode, 'native');
   assert.deepEqual(restoredNative.data.data.world.strategy, nativeStep.data.world.strategy);
+  const offered = await request(`/api/games/${nativeId}/simulation/chat-record`, 'POST', { expectedRevision: 8, channel: 'diplomacy', target: 'France', prompt: 'Помощь 500 млн евро',
+    response: { reply: 'Обсудим помощь.', stance: 'counter', actions: [{ type: 'aid', target: 'France', value: 500 }] } });
+  assert.equal(offered.status, 200);
+  const message = offered.data.chat.find(t => t.engine === 'native-strategy-v1').messages.at(-1);
+  const cash = offered.data.world.strategy.countries[player].treasury;
+  const applied = await request(`/api/games/${nativeId}/simulation/chat-apply`, 'POST', { expectedRevision: 9, messageId: message.id });
+  assert.equal(applied.status, 200);
+  assert.equal(applied.data.world.strategy.countries[player].treasury, cash - 500);
+  const chatBundle = (await request(`/api/games/${nativeId}/export`)).data;
+  const chatImport = await request('/api/games/import', 'POST', chatBundle);
+  assert.equal(chatImport.status, 201);
+  assert.deepEqual(chatImport.data.data.chat, chatBundle.data.chat);
+  const broken = structuredClone(chatBundle);
+  broken.data.chat.find(t => t.engine === 'native-strategy-v1').messages[0].time = '9999-01-01';
+  const catalogBefore = (await request('/api/games')).data;
+  assert.equal((await request('/api/games/import', 'POST', broken)).status, 400);
+  assert.deepEqual((await request('/api/games')).data, catalogBefore);
+  assert.equal((await request('/api/strategy/chatgpt/chat', 'POST', { gameId: nativeId, channel: 'decisions', target: '', prompt: 'Совет', model: 'unit', expectedRevision: 10 })).status, 400, 'a disconnected account cannot fabricate an AI turn');
 });

@@ -3,8 +3,9 @@
 import { advanceSimulationClock } from './time.js';
 import { createSimulationState, readWorldSimulation, validateSimulationState } from './state.js';
 import { createStrategy, strategyDecision } from './strategy.js';
+import { applyConversation, recordConversation, validateNativeChats } from './conversations.js';
 
-/** @typedef {{game: Record<string, unknown>, world: Record<string, unknown>, meta: Record<string, unknown>}} ClockPair */
+/** @typedef {{game: Record<string, unknown>, world: Record<string, unknown>, meta: Record<string, unknown>, chat?:unknown[]}} ClockPair */
 /** @typedef {{step: import('./time.js').TimeStep, expectedRevision: number}} ClockRequest */
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -38,7 +39,8 @@ export function validateClockPair(pair, gameId) {
     || pair.meta.id !== gameId || pair.meta.scenarioId !== simulation.scenarioId) {
     throw new Error('Simulation clock record has inconsistent identity or dates.');
   }
-  return { game: pair.game, world: pair.world, meta: pair.meta };
+  const chat = pair.chat === undefined ? undefined : validateNativeChats(pair.chat, /** @type {import('./strategy.js').Strategy} */ (pair.world.strategy), simulation.date);
+  return { game: pair.game, world: pair.world, meta: pair.meta, ...(chat ? { chat } : {}) };
 }
 
 /** @param {ClockPair} pair @param {unknown} request @param {string} gameId */
@@ -71,15 +73,20 @@ export function prepareSimulationOperation(pair, operation, raw, gameId, context
     world.simulation = validateSimulationState({ ...createSimulationState({ scenarioId: String(pair.meta.scenarioId), date: String(pair.game.gameDate), seed: raw.seed }), rulesVersion: 2 });
     return { game: { ...pair.game, simulationMode: 'native', language: 'Russian' }, world, days: 0 };
   }
-  if (operation !== 'decision') throw new ClockRequestError('Неизвестная операция.');
+  if (!['decision', 'chat-record', 'chat-apply'].includes(operation)) throw new ClockRequestError('Неизвестная операция.');
   const simulation = readWorldSimulation(pair.world);
   if (!simulation || simulation.rulesVersion !== 2) throw new ClockRequestError('Расчётный режим не включён.');
   if (typeof raw.expectedRevision !== 'number' || !Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision < 0) throw new ClockRequestError('Некорректная revision команды.');
   if (raw.expectedRevision !== simulation.revision) throw new ClockRequestError('Состояние изменилось. Обновите партию.', 409);
-  if (Object.keys(raw).some((key) => !['type', 'target', 'value', 'expectedRevision'].includes(key))) throw new ClockRequestError('Команда содержит неизвестные поля.');
+  if (operation === 'decision' && Object.keys(raw).some((key) => !['type', 'target', 'value', 'expectedRevision'].includes(key))) throw new ClockRequestError('Команда содержит неизвестные поля.');
   if (simulation.revision === Number.MAX_SAFE_INTEGER) throw new ClockRequestError('Счётчик состояния исчерпан.');
   try {
     validateClockPair(pair, gameId);
+    if (operation === 'chat-record' || operation === 'chat-apply') {
+      const result = operation === 'chat-record' ? recordConversation(pair, raw, simulation.revision + 1) : applyConversation(pair, raw, simulation.revision);
+      return { game: structuredClone(pair.game), world: { ...structuredClone(pair.world), strategy: result.strategy,
+        simulation: { ...simulation, revision: simulation.revision + 1 } }, chat: result.chat, days: 0 };
+    }
     const strategy = strategyDecision(pair.world.strategy, raw, simulation.date);
     return { game: structuredClone(pair.game), world: { ...structuredClone(pair.world), strategy, simulation: { ...simulation, revision: simulation.revision + 1 } }, days: 0 };
   } catch (error) { throw new ClockRequestError(error instanceof Error ? error.message : String(error)); }

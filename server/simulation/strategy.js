@@ -7,7 +7,7 @@ import { buildStrategyGeography } from './geography.js';
 
 /** @typedef {{gdp:number, treasury:number, debt:number, tax:number, spending:number, stability:number, readiness:number, industry:number, energy:number, unemployment:number, capital:number, relations:Record<string,number>}} Country */
 /** @typedef {{owner:string, kind:'tax'|'spending'|'industry'|'mobilize', value?:number, due:string}} Project */
-/** @typedef {{version:1, dataKind:'game-estimate', player:string, countries:Record<string,Country>, regions?:Record<string,import('./geography.js').Region>, history:Array<{date:string,text:string,country:string}>, projects:Project[], treaties:Array<{a:string,b:string,until:string}>, reports:Array<{date:string,target:string,confidence:number,text:string}>, intel:Array<{owner:string,target:string,due:string}>, wars:Array<{a:string,b:string,since:string}>}} Strategy */
+/** @typedef {{version:1, dataKind:'game-estimate', player:string, countries:Record<string,Country>, regions?:Record<string,import('./geography.js').Region>, contacts?:Array<{target:string,date:string}>, history:Array<{date:string,text:string,country:string}>, projects:Project[], treaties:Array<{a:string,b:string,until:string}>, reports:Array<{date:string,target:string,confidence:number,text:string}>, intel:Array<{owner:string,target:string,due:string}>, wars:Array<{a:string,b:string,since:string}>}} Strategy */
 /** @param {number} x @param {number} low @param {number} high */
 const clamp = (x, low, high) => Math.max(low, Math.min(high, x));
 /** @template T @param {T} value @returns {T} */
@@ -56,6 +56,10 @@ export function validateStrategy(input, at = '') {
   for (const entry of raw.history) if (!object(entry) || !dateValue(entry.date) || typeof entry.text !== 'string' || entry.text.length > 20000 || !Object.hasOwn(raw.countries, entry.country) || (at && entry.date > at)) throw new Error('Повреждён журнал.');
   for (const report of raw.reports) if (!object(report) || !dateValue(report.date) || typeof report.text !== 'string' || !integer(report.confidence, 0, 100) || !Object.hasOwn(raw.countries, report.target) || (at && report.date > at)) throw new Error('Повреждён отчёт.');
   const regions = raw.regions || {};
+  if (raw.contacts !== undefined && (!Array.isArray(raw.contacts) || raw.contacts.length > entries.length
+    || new Set(raw.contacts.map(c => c.target)).size !== raw.contacts.length
+    || raw.contacts.some(c => !object(c) || c.target === raw.player || !Object.hasOwn(raw.countries, c.target)
+      || !dateValue(c.date) || (at && c.date > at)))) throw new Error('Повреждена память дипломатических контактов.');
   for (const [id, region] of Object.entries(regions)) {
     if (!object(region) || !Object.hasOwn(raw.countries, region.owner) || !Object.hasOwn(raw.countries, region.sovereign)
       || typeof region.name !== 'string' || !Array.isArray(region.neighbors)
@@ -153,6 +157,13 @@ export function strategyDecision(raw, request, date) {
     s.countries[target].energy = clamp(s.countries[target].energy - 5, 0, 100);
     c.industry = clamp(c.industry - 2, 0, 100);
     note(s, date, `Введены санкции против ${target}: торговый договор расторгнут, энергетическая доступность адресата снизилась; отечественная промышленность понесла издержки.`);
+  } else if (type === 'dialogue') {
+    counterpart();
+    if (!integer(value, -1, 1)) throw new Error('Неизвестный дипломатический сигнал.');
+    if (s.contacts?.some(x => x.target === target && x.date === date)) throw new Error('Отношения с этой страной уже менялись беседой сегодня. Продвиньте время.');
+    spend(0, 2); relation(s, s.player, target, value * 2);
+    s.contacts = [...(s.contacts || []).filter(x => x.target !== target), { target, date }];
+    note(s, date, `Дипломатический обмен с ${target}: отношения ${value > 0 ? '+' : ''}${value * 2}; израсходовано 2 политической поддержки.`);
   } else if (type === 'intel') {
     counterpart();
     if (s.intel.some((x) => x.owner === s.player && x.target === target)) throw new Error('Операция уже проводится.');

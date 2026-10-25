@@ -1,5 +1,6 @@
 import { ClockRequestError } from "./simulation/clockStore.js";
 import { ChatGPTNetworkError, createChatGPTPlan } from "./chatgptPlan.js";
+import { createStrategyChat } from './strategyChat.js';
 /*! Open Historia — portions (CORS, AI relay, shutdown endpoint, hub proxy) © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 import crypto from "crypto";
 import express from "express";
@@ -727,6 +728,11 @@ app.post('/api/strategy/chatgpt/cancel', (_req, res) => { res.json(plan().cancel
 app.get('/api/strategy/chatgpt/models', async (_req, res) => {
   res.set('Cache-Control', 'no-store');
   try { res.json({ models: await plan().models() }); } catch (e) { sendError(res, 400, e); }
+});
+const strategyChat = createStrategyChat({ readGame: getGameDetails, commit: advanceGameClock, ask: input => plan().ask(input) });
+app.post('/api/strategy/chatgpt/chat', jsonParser, async (req, res) => {
+  try { res.json(await strategyChat(req.body)); }
+  catch (error) { sendError(res, error instanceof ClockRequestError ? error.status : 400, error); }
 });
 app.post('/api/strategy/chatgpt/ask', jsonParser, async (req, res) => {
   res.set('Cache-Control', 'no-store');

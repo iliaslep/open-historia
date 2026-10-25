@@ -1,5 +1,6 @@
 import { ClockRequestError, commitSimulationOperation, recoverSimulationClock } from "./simulation/clockStore.js";
 import { readWorldSimulation } from "./simulation/state.js";
+import { validateNativeChats } from './simulation/conversations.js';
 /*! Open Historia — portions (regions.geojson scenario asset + custom-map seeding) © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 import fs from "fs";
 import { normalizeFeatureOverrides, normalizeFeatureSettings } from "./gameFeatures.js";
@@ -565,7 +566,8 @@ const normalizeImageContentType = (value) => {
 // Recover before reading or overwriting any top-level file of a game. The
 // recovery module writes directly via atomic renames, never through this hook.
 const recoverClockForPath = (targetPath) => {
-  const directory = path.dirname(targetPath);
+  const parent = path.dirname(targetPath);
+  const directory = path.basename(parent) === 'storage' ? path.dirname(parent) : parent;
   if (path.dirname(directory) === GAMES_DIR && recoverSimulationClock(directory)) invalidateCatalogs();
 };
 
@@ -3786,7 +3788,8 @@ const importGameBundle = (bundle) => {
 
   const meta = bundle.game && typeof bundle.game === "object" ? bundle.game : {};
   const data = bundle.data && typeof bundle.data === "object" ? bundle.data : {};
-  readWorldSimulation(data.world);
+  const simulation = readWorldSimulation(data.world);
+  if (simulation?.rulesVersion === 2) validateNativeChats(data.chat ?? [], data.world.strategy, simulation.date);
   const ref = bundle.scenarioRef && typeof bundle.scenarioRef === "object" ? bundle.scenarioRef : {};
   const scenarioId = String(ref.scenarioId ?? "").trim() || DEFAULT_SCENARIO_ID;
 

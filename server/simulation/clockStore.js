@@ -7,6 +7,9 @@ export { ClockRequestError } from './clockCommand.js';
 
 const JOURNAL = '.simulation-clock-journal.json';
 const SCHEMA = 'open-historia-clock-transaction/1';
+// Old applications must refuse a pending chat transaction rather than silently
+// recover only game/world and drop the conversation/receipt projection.
+const CHAT_SCHEMA = 'open-historia-clock-transaction/2';
 const digest = (text) => createHash('sha256').update(text).digest('hex');
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -39,13 +42,18 @@ export function recoverSimulationClock(directory) {
   const journal = path.join(directory, JOURNAL);
   if (!fs.existsSync(journal)) return false;
   const envelope = readJson(journal);
-  if (!isObject(envelope) || envelope.schema !== SCHEMA || typeof envelope.payload !== 'string'
+  if (!isObject(envelope) || ![SCHEMA, CHAT_SCHEMA].includes(envelope.schema) || typeof envelope.payload !== 'string'
     || envelope.sha256 !== digest(envelope.payload)) {
     throw new Error('Simulation clock recovery journal is corrupt or unsupported.');
   }
   const pair = validateClockPair(JSON.parse(envelope.payload), path.basename(directory));
+  if ((pair.chat !== undefined) !== (envelope.schema === CHAT_SCHEMA)) throw new Error('Simulation journal has an incompatible chat projection.');
   atomicJson(path.join(directory, 'game.json'), pair.game);
   atomicJson(path.join(directory, 'world.json'), pair.world);
+  if (pair.chat !== undefined) {
+    fs.mkdirSync(path.join(directory, 'storage'), { recursive: true });
+    atomicJson(path.join(directory, 'storage', 'chat.json'), pair.chat);
+  }
   atomicJson(path.join(directory, 'game-instance.json'), pair.meta);
   fs.unlinkSync(journal);
   syncDirectory(directory);
@@ -63,6 +71,7 @@ export function commitSimulationOperation(directory, operation, request, context
     game: readJson(path.join(directory, 'game.json')),
     world: readJson(path.join(directory, 'world.json')),
     meta: readJson(path.join(directory, 'game-instance.json')),
+    ...(['chat-record', 'chat-apply'].includes(operation) ? { chat: fs.existsSync(path.join(directory, 'storage', 'chat.json')) ? readJson(path.join(directory, 'storage', 'chat.json')) : [] } : {}),
   };
   // Older createGame records omitted the redundant id from metadata; the
   // validated directory identity remains authoritative for those saves.
@@ -72,9 +81,9 @@ export function commitSimulationOperation(directory, operation, request, context
   // asset URLs even if the process died before updating the catalog token.
   const previousTime = Date.parse(pair.meta.updatedAt);
   const updatedAt = new Date(Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0)).toISOString();
-  const committedPair = validateClockPair({ game: next.game, world: next.world, meta: { ...pair.meta, updatedAt } }, path.basename(directory));
+  const committedPair = validateClockPair({ game: next.game, world: next.world, meta: { ...pair.meta, updatedAt }, ...('chat' in next ? { chat: next.chat } : {}) }, path.basename(directory));
   const payload = JSON.stringify(committedPair);
-  atomicJson(path.join(directory, JOURNAL), { schema: SCHEMA, payload, sha256: digest(payload) });
+  atomicJson(path.join(directory, JOURNAL), { schema: 'chat' in next ? CHAT_SCHEMA : SCHEMA, payload, sha256: digest(payload) });
   // From this point the turn is committed intent. Failure leaves the journal:
   // recovery rolls forward; an identical request then conflicts rather than double-advancing.
   recoverSimulationClock(directory);

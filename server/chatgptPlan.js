@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes, randomUUID, createHash, createPublicKey, verify } from 'node:crypto';
+import { STRATEGY_CHAT_INSTRUCTIONS } from './simulation/conversations.js';
 
 const AUTH = 'https://auth.openai.com';
 const RESOURCE = 'https://api.openai.com/v1';
@@ -217,8 +218,9 @@ export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = desktopF
       if (!Array.isArray(data.models)) throw new Error('Неизвестный формат каталога моделей ChatGPT.');
       return data.models.filter((m) => m.visibility === 'list' && typeof m.slug === 'string').map((m) => ({ id: m.slug, name: m.display_name || m.slug }));
     },
-    async ask({ model, prompt, context }) {
+    async ask({ model, prompt, context, purpose = 'advisor' }) {
       if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 3000 || typeof context !== 'string' || context.length > 20000) throw new Error('Слишком большой или пустой запрос.');
+      if (!['advisor', 'strategy'].includes(purpose)) throw new Error('Неизвестный формат запроса.');
       const selectedId = store.active;
       const available = await this.models();
       if (!available.some((item) => item.id === model)) throw new Error('Выберите модель из каталога своего аккаунта.');
@@ -230,7 +232,7 @@ export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = desktopF
         const response = await get(`${RESOURCE}/responses`, { method: 'POST', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(120000)]),
           headers: { Authorization: `Bearer ${account.access_token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model, store: false, stream: true,
-            instructions: 'Ты советник в геополитической игре. Отвечай на русском, кратко (до 600 слов). История после стартовой даты альтернативна. Игровые оценки не выдавай за исторические факты. Не утверждай, что изменил состояние игры. Рекомендации исполняются только через проверяемые игровые команды.',
+            instructions: purpose === 'strategy' ? STRATEGY_CHAT_INSTRUCTIONS : 'Ты советник в геополитической игре. Отвечай на русском, кратко (до 600 слов). История после стартовой даты альтернативна. Игровые оценки не выдавай за исторические факты. Не утверждай, что изменил состояние игры. Рекомендации исполняются только через проверяемые игровые команды.',
             input: [{ role: 'user', content: `${context}\n\nВопрос: ${prompt}` }] }) });
         if (!response.ok) throw new Error(`Запрос ChatGPT отклонён (${response.status}). Партия продолжает работать автономно.`);
         let buffer = '', text = '', completed = false, usage = null;
