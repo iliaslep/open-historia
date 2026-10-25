@@ -152,7 +152,9 @@ export default defineConfig(({ mode }) => ({
   // save/load (and the game's runtime endpoints) work with hot-reload too.
   server: {
     proxy: {
-      '/api': 'http://localhost:3000',
+      // Preserve the browser Host alongside Origin so the server's same-origin
+      // write guard remains effective through the development proxy.
+      '/api': { target: 'http://localhost:3000', changeOrigin: false },
     },
   },
   build: {

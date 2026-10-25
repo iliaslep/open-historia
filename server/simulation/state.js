@@ -1,15 +1,16 @@
 // @ts-check
 import { normalizeGameDate } from '../gameDates.js';
 import { createRandomState, validateRandomState } from './random.js';
+import { validateStrategy } from './strategy.js';
 
 /**
  * Header for the opt-in simulation. No economy or NPC turn is implemented yet.
  * @typedef {object} SimulationState
  * @property {1} schemaVersion
- * @property {1} rulesVersion
+ * @property {1 | 2} rulesVersion
  * @property {string} scenarioId
  * @property {string} date Canonical CE date (0001–9999), not wall-clock time.
- * @property {number} revision Processed daily simulation ticks (not random draws or save writes).
+ * @property {number} revision Daily ticks; rules v2 also counts accepted decisions.
  * @property {import('./random.js').RandomState} rng
  */
 export const SIMULATION_SCHEMA_VERSION = 1;
@@ -19,7 +20,7 @@ export const SIMULATION_RULES_VERSION = 1;
 export function validateSimulationState(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid simulation state.');
   const value = /** @type {Record<string, unknown>} */ (raw);
-  if (value.schemaVersion !== SIMULATION_SCHEMA_VERSION || value.rulesVersion !== SIMULATION_RULES_VERSION) {
+  if (value.schemaVersion !== SIMULATION_SCHEMA_VERSION || (value.rulesVersion !== 1 && value.rulesVersion !== 2)) {
     throw new Error('Unsupported simulation schemaVersion or rulesVersion; save was not migrated.');
   }
   const { scenarioId, date, revision } = value;
@@ -30,7 +31,7 @@ export function validateSimulationState(raw) {
     || typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) {
     throw new Error('Invalid simulation header fields.');
   }
-  return { schemaVersion: 1, rulesVersion: 1, scenarioId, date, revision, rng: validateRandomState(value.rng) };
+  return { schemaVersion: 1, rulesVersion: value.rulesVersion, scenarioId, date, revision, rng: validateRandomState(value.rng) };
 }
 
 /** @param {{scenarioId: string, date: string, seed: number}} options @returns {SimulationState} */
@@ -45,5 +46,7 @@ export function createSimulationState({ scenarioId, date, seed }) {
  */
 export function readWorldSimulation(world) {
   if (!world || typeof world !== 'object' || !Object.hasOwn(world, 'simulation')) return undefined;
-  return validateSimulationState(/** @type {{simulation: unknown}} */ (world).simulation);
+  const header = validateSimulationState(/** @type {{simulation: unknown}} */ (world).simulation);
+  if (header.rulesVersion === 2) validateStrategy(/** @type {{strategy: unknown}} */ (world).strategy, header.date);
+  return header;
 }

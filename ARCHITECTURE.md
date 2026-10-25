@@ -1,3 +1,71 @@
+# Текущее состояние: автономная версия 0.1
+
+`simulationMode: native` выбирает отдельный исполнитель и русский HUD поверх
+существующего WorldMap. `rulesVersion: 2` включает `world.strategy`; версия 1
+сохраняет календарный контракт старых контрольных партий. Legacy-партии не
+мигрируют автоматически. В v2 revision считает дневные шаги и принятые решения;
+время при решении на паузе не изменяется.
+
+`strategy.js` — чистые типизированные детерминированные правила. Бюджет,
+предел долга, реформы, торговля, санкции, разведка и войны не вызывают LLM.
+`geography.js` строит сухопутное соседство из общих рёбер сценарной геометрии.
+Контроль и суверенитет хранятся раздельно; результат хода проецируется в прежние
+поля карты. Единственный источник экономики — `world.strategy`.
+
+Операции start/decision/advance проходят общий clockCommand. Сервер фиксирует
+весь расчёт и метаданные через проверенный journal; IndexedDB — одной readwrite
+транзакцией. Результат проверяется до публикации journal. Legacy raw PUT и
+обновление расчётных разделов native-партии запрещены на сервере и внутри
+IDB-транзакции, включая гонку со старой вкладкой. Метаданные партии редактируемы.
+
+Windows использует отдельный entry `electron/strategy.cjs`, appId и профиль.
+Автообновление upstream не выполняется. Локальный сервер слушает только loopback.
+Крупные карты загружаются при первом запуске оригинальным загрузчиком и
+проверяются SHA-256 самим launcher. FMG поставляется для исходного редактора.
+Реальный EXE на Windows не запускался; браузерный интерфейс проверен при
+блокировке всех внешних HTTPS-запросов.
+
+## Официальный ChatGPT: проверено по документации 2026-10-24
+
+Документы теперь доступны и прочитаны: [OSS flow](https://developers.openai.com/siwc/token-sharing-open-source),
+[sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in),
+[profiles](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions),
+[inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference),
+[preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
+Подходящий Plus/Pro может разрешить локальному OSS-приложению использовать лимит
+плана. Поддержка аккаунта, модели и лимиты определяются OpenAI.
+
+`chatgptPlan.js` реализует dynamic_agent_client, стабильный host ID, одноразовые
+state/nonce, PKCE S256, loopback callback `/auth/callback`, выданный client_id,
+проверку RS256/JWKS/issuer/audience/expiry/nonce/subject и отдельные аккаунты.
+Scopes: openid profile email offline_access resource.invoke chatgpt.tokens.use.direct;
+resource: https://api.openai.com/v1. Refresh сериализуется и ротируется атомарно,
+соблюдается earliest_refresh_at. Выход стирает локальные токены до отзыва и
+сообщает о неподтверждённом удалённом отзыве.
+
+Windows защищает весь credential store Electron safeStorage; standalone Node —
+файл 0600/каталог 0700. Токены не уходят в браузерное хранилище, игровые сохранения,
+журнал ходов или экспорт. OAuth API доступен только по loopback. Windows-сборка
+не включает `server/data`, тестовые профили или пользовательские секреты.
+
+Модели читаются из каталога данного аккаунта; только visibility=list и slug.
+Запрос к public Responses использует store:false, stream:true и input-массив,
+без неподдерживаемых generation parameters. Успех требует response.completed;
+failed/incomplete/оборванный поток не выдают частичный ответ за успех. Контекст
+содержит свою страну, публичные события и доступные разведотчёты. Ответ — совет,
+без доступа на запись к миру. Кнопка отправки явно сообщает расход лимита.
+Программные рекомендации работают независимо от входа.
+
+Реальная авторизация/инференс НЕ проверены: auth.openai.com блокируется прокси
+403 даже после разрешённого повторного запроса. Протокол проверен изолированными
+тестами с RSA-подписанными fixtures; Windows DPAPI в Linux не проверялся.
+
+## История первоначального аудита и последовательных контрактов
+
+Ниже сохранены выводы **на момент соответствующих ранних этапов**. Формулировки
+«ещё не реализовано», «UI пока не вызывает», «документы заблокированы» относятся
+к тем этапам; актуальное состояние описано выше и в PROGRESS.md.
+
 # Архитектура проекта и результаты аудита
 
 Аудит 2026-10-24. Основная база: `iliaslep/open-historia`, исходный HEAD

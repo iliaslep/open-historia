@@ -8,6 +8,7 @@ const MapEditor = lazy(() => import("./Editor/MapEditor.jsx"));
 // while the startup screen is already up, not before it can draw, and the
 // editor never loads them. Nothing outside Game/Map imports maplibre-gl.
 const WorldMap = lazy(() => import("./Game/Map/World.jsx"));
+const StrategyPanel = lazy(() => import("./Game/GameUI/StrategyPanel.jsx"));
 import StartupScreen from "./runtime/StartupScreen.jsx";
 import ErrorBoundary from "./runtime/ErrorBoundary.jsx";
 import AppUpdateBanner from "./runtime/AppUpdateBanner.jsx";
@@ -31,7 +32,7 @@ const WorldShell = {
   touchAction: "none",
 };
 
-function GameApp() {
+function GameApp({ native = false }) {
   const mapRef = useRef(null);
   const preloadStartedAtRef = useRef(null);
   const preloadFinishedRef = useRef(false);
@@ -164,7 +165,7 @@ function GameApp() {
 
     // Warm the AI chunk now that the map has settled, so the player's first turn
     // pays for the turn and not for the download too.
-    prefetchGameplay();
+    if (!native) prefetchGameplay();
 
     if (preloadFinishedRef.current) {
       setIsReady(true);
@@ -191,12 +192,13 @@ function GameApp() {
     key={`map-${activeGameId || "default"}`}
     mapRef={mapRef}
     projection={isGlobeEnabled ? "globe" : "mercator"}
-    terrainEnabled={isTerrainEnabled}
+    terrainEnabled={!native && isTerrainEnabled}
     onInitialIdle={handleFirstWorldIdle}
     />
     </Suspense>
     </div>
-    {isReady && (
+    {native && <Suspense fallback={null}><StrategyPanel key={`strategy-${activeGameId || "new"}`} /></Suspense>}
+    {isReady && !native && (
       <UI
       key={`ui-${activeGameId || "default"}`}
       isGlobeEnabled={isGlobeEnabled}
@@ -206,7 +208,7 @@ function GameApp() {
       setIsTerrainEnabled={setIsTerrainEnabled}
       />
     )}
-    {!isReady && <StartupScreen {...startupOverlayState} />}
+    {!isReady && !native && <StartupScreen {...startupOverlayState} />}
     </>
   );
 }
@@ -215,6 +217,7 @@ function GameApp() {
 //   ?editor=1  -> the OpenLayers map editor (author custom maps)
 // Flags are read once at render time, so hook order stays consistent.
 function App() {
+  const { activeGame } = useLibraryState();
   const params =
     typeof window !== "undefined"
       ? new URLSearchParams(window.location.search)
@@ -234,7 +237,8 @@ function App() {
     <>
       <AppUpdateBanner />
       <ErrorBoundary>
-        <GameApp />
+        {!params.has("strategy") && activeGame?.simulationMode !== "native" && <a href="?strategy=1" style={{position:"fixed",top:12,right:12,zIndex:11000,background:"#163d39",color:"white",padding:"10px 15px",borderRadius:8}}>Автономная стратегия</a>}
+        <GameApp native={params.has("strategy") || activeGame?.simulationMode === "native"} />
       </ErrorBoundary>
     </>
   );

@@ -1,4 +1,5 @@
 import { ClockRequestError } from "./simulation/clockStore.js";
+import { createChatGPTPlan } from "./chatgptPlan.js";
 /*! Open Historia — portions (CORS, AI relay, shutdown endpoint, hub proxy) © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 import crypto from "crypto";
 import express from "express";
@@ -582,7 +583,7 @@ app.post("/api/scenarios", jsonParser, (req, res) => {
   try {
     res.status(201).json(createScenario(req.body ?? {}));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -590,7 +591,7 @@ app.put("/api/scenarios/active", jsonParser, (req, res) => {
   try {
     res.json(setSelectedScenario(req.body?.scenarioId));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -598,7 +599,7 @@ app.put("/api/scenarios/selected", jsonParser, (req, res) => {
   try {
     res.json(setSelectedScenario(req.body?.scenarioId));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -606,7 +607,7 @@ app.put("/api/scenarios/:scenarioId", jsonParser, (req, res) => {
   try {
     res.json(updateScenario(req.params.scenarioId, req.body ?? {}));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -615,7 +616,7 @@ app.get("/api/scenarios/:scenarioId/export", (req, res) => {
     // Always the whole scenario; the old ?mode=light is accepted and ignored.
     res.json(exportScenarioBundle(req.params.scenarioId));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -623,7 +624,7 @@ app.post("/api/scenarios/import", largeJsonParser, (req, res) => {
   try {
     res.status(201).json(importScenarioBundle(req.body ?? {}, { setSelected: true }));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -633,7 +634,7 @@ app.put("/api/scenarios/:scenarioId/import", largeJsonParser, (req, res) => {
   try {
     res.json(updateScenarioFromBundle(req.params.scenarioId, req.body ?? {}));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -665,7 +666,7 @@ app.put("/api/scenarios/:scenarioId/assets/:assetKey", uploadParser, (req, res) 
       ),
     );
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -679,12 +680,66 @@ app.get("/api/games", (_req, res) => {
 
 // Local calculation only: the client supplies a command and expected revision,
 // never an arbitrary replacement world. UI activation is a separate change.
-app.post("/api/games/:gameId/simulation/advance", jsonParser, (req, res) => {
+app.post("/api/games/:gameId/simulation/:operation", jsonParser, (req, res) => {
   try {
-    res.json(advanceGameClock(req.params.gameId, req.body));
+    res.json(advanceGameClock(req.params.gameId, req.body, req.params.operation));
   } catch (error) {
     sendError(res, error instanceof ClockRequestError ? error.status : 500, error);
   }
+});
+
+let chatgptPlan;
+app.use(['/api/strategy/chatgpt', '/auth/callback'], (req, res, next) => {
+  if (!isLoopbackAddress(req.socket?.remoteAddress)) return res.status(403).json({ error: 'ChatGPT подключается только на локальном компьютере.' });
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+const plan = () => {
+  if (!chatgptPlan) chatgptPlan = createChatGPTPlan({ directory: path.join(DATA_DIR, 'private', 'chatgpt'),
+    callbackUrl: () => `http://127.0.0.1:${httpServer.address().port}/auth/callback` });
+  return chatgptPlan;
+};
+app.get('/api/strategy/chatgpt/status', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json(plan().status()); } catch { sendError(res, 500, new Error('Хранилище ChatGPT недоступно. Игровые сохранения не изменены.')); }
+});
+app.post('/api/strategy/chatgpt/start', jsonParser, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json(plan().begin(req.body?.accountId)); } catch (e) { sendError(res, 400, e); }
+});
+app.get('/auth/callback', async (req, res) => {
+  res.set('Cache-Control', 'no-store'); res.set('Referrer-Policy', 'no-referrer');
+  try {
+    await plan().complete(new URLSearchParams(req.originalUrl.split('?')[1] || ''));
+    res.redirect(303, '/?strategy=1&chatgpt=connected');
+  } catch { res.status(400).type('text/plain').send('Вход ChatGPT не завершён. Вернитесь в игру и повторите вход.'); }
+});
+app.post('/api/strategy/chatgpt/select', jsonParser, (req, res) => {
+  try { res.json(plan().select(req.body?.accountId)); } catch (e) { sendError(res, 400, e); }
+});
+app.post('/api/strategy/chatgpt/logout', async (_req, res) => {
+  try { res.json(await plan().logout()); } catch { sendError(res, 500, new Error('Выход ChatGPT не завершён. Отключите приложение в настройках ChatGPT.')); }
+});
+app.post('/api/strategy/chatgpt/cancel', (_req, res) => { res.json(plan().cancel()); });
+app.get('/api/strategy/chatgpt/models', async (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json({ models: await plan().models() }); } catch (e) { sendError(res, 400, e); }
+});
+app.post('/api/strategy/chatgpt/ask', jsonParser, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const { gameId, model, prompt, target } = req.body || {};
+    const details = getGameDetails(gameId);
+    if (details.data.game.simulationMode !== 'native') throw new Error('Выберите расчётную партию.');
+    const state = details.data.world.strategy;
+    const own = state.countries[state.player];
+    // Never send the whole world or hidden foreign readiness to the model.
+    const context = JSON.stringify({ country: state.player, date: details.data.game.gameDate, dataKind: state.dataKind,
+      ownCountry: own, interlocutor: typeof target === 'string' && Object.hasOwn(state.countries, target) ? target : null,
+      treaties: state.treaties.filter(t => t.a === state.player || t.b === state.player).slice(-12),
+      reports: state.reports.slice(-4), recentEvents: state.history.slice(-8) });
+    res.json(await plan().ask({ model, prompt, context }));
+  } catch (e) { sendError(res, 400, e); }
 });
 
 app.get("/api/games/:gameId", (req, res) => {
@@ -711,7 +766,7 @@ app.post("/api/games/import", largeJsonParser, (req, res) => {
     // Never setActive: an import must not switch the game the player is in.
     res.status(201).json(importGameBundle(req.body ?? {}));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -731,7 +786,7 @@ app.put("/api/games/:gameId/snapshots", largeJsonParser, (req, res) => {
   try {
     res.json(writeGameSnapshots(req.params.gameId, req.body));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -739,7 +794,7 @@ app.post("/api/games", jsonParser, (req, res) => {
   try {
     res.status(201).json(createGame(req.body ?? {}));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -747,7 +802,7 @@ app.put("/api/games/active", jsonParser, (req, res) => {
   try {
     res.json(setActiveGame(req.body?.gameId));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -755,7 +810,7 @@ app.put("/api/games/:gameId", jsonParser, (req, res) => {
   try {
     res.json(updateGame(req.params.gameId, req.body ?? {}));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -782,7 +837,7 @@ app.put("/api/games/:gameId/assets/:assetKey", uploadParser, (req, res) => {
       ),
     );
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -790,7 +845,7 @@ app.delete("/api/games/:gameId", (req, res) => {
   try {
     res.json(deleteGame(req.params.gameId));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -798,7 +853,7 @@ app.delete("/api/games/:gameId/assets/:assetKey", (req, res) => {
   try {
     res.json(removeGameAsset(req.params.gameId, req.params.assetKey));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -806,7 +861,7 @@ app.delete("/api/scenarios/:scenarioId/assets/:assetKey", (req, res) => {
   try {
     res.json(removeScenarioAsset(req.params.scenarioId, req.params.assetKey));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -814,7 +869,7 @@ app.delete("/api/scenarios/:scenarioId", (req, res) => {
   try {
     res.json(deleteScenario(req.params.scenarioId));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -860,7 +915,7 @@ app.put("/api/runtime/json/:assetKey", jsonParser, (req, res) => {
     res.type("application/json");
     res.send(JSON.stringify(asset.data));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -1303,7 +1358,7 @@ app.post("/api/mapeditor/documents", largeJsonParser, (req, res) => {
   try {
     res.status(201).json(createMapEditorDocument(req.body ?? {}));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -1319,7 +1374,7 @@ app.put("/api/mapeditor/documents/:id", largeJsonParser, (req, res) => {
   try {
     res.json(updateMapEditorDocument(req.params.id, req.body ?? {}));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -1327,7 +1382,7 @@ app.delete("/api/mapeditor/documents/:id", (req, res) => {
   try {
     res.json(deleteMapEditorDocument(req.params.id));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -1346,7 +1401,7 @@ app.post("/api/flags", jsonParser, (req, res) => {
   try {
     res.status(201).json(createFlag(req.body ?? {}));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -1354,7 +1409,7 @@ app.delete("/api/flags/:id", (req, res) => {
   try {
     res.json(deleteFlag(req.params.id));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -1371,7 +1426,7 @@ app.post("/api/basemaps", largeJsonParser, (req, res) => {
   try {
     res.status(201).json(createBasemap(req.body ?? {}));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -1387,7 +1442,7 @@ app.delete("/api/basemaps/:id", (req, res) => {
   try {
     res.json(deleteBasemap(req.params.id));
   } catch (error) {
-    sendError(res, 400, error);
+    sendError(res, error instanceof ClockRequestError ? error.status : 400, error);
   }
 });
 
@@ -1408,6 +1463,16 @@ if (fs.existsSync(fmgDistDir)) {
   app.use("/fmg", (_req, res) => { res.status(404).type("text/plain").send("Not found"); });
 }
 
+// Desktop map assets live in the writable profile, outside app.asar. The editor
+// uses these fixed URLs; serve only the two known seed files from that location.
+for (const name of ['regions-seed.geojson', 'cities-seed.json']) {
+  app.get(`/assets/${name}`, (_req, res, next) => {
+    const directory = process.env.OH_ASSETS_DIR || path.join(__dirname, '../public/assets');
+    const file = path.resolve(directory, name);
+    if (!fs.existsSync(file)) return next();
+    res.sendFile(file);
+  });
+}
 app.use(express.static(distDir));
 
 app.get("*splat", (_req, res) => {

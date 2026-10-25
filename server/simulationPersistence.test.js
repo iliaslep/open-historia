@@ -12,6 +12,9 @@ test('simulation checkpoints persist through the real API; invalid writes/import
   process.env.OH_DATA_DIR = root;
   process.env.OH_HOST = '127.0.0.1';
   process.env.PORT = '0';
+  process.env.OH_ASSETS_DIR = path.join(root, 'downloaded-assets');
+  fs.mkdirSync(process.env.OH_ASSETS_DIR);
+  fs.writeFileSync(path.join(process.env.OH_ASSETS_DIR, 'cities-seed.json'), JSON.stringify({ downloadedSeed: true }));
   const { httpServer } = await import('./server.js');
   t.after(async () => {
     await new Promise((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
@@ -27,6 +30,15 @@ test('simulation checkpoints persist through the real API; invalid writes/import
     return { status: response.status, data: await response.json() };
   };
   const created = await request('/api/games', 'POST', { name: 'Checkpoint test', scenarioId: 'default', setActive: true });
+  assert.deepEqual((await request('/assets/cities-seed.json')).data, { downloadedSeed: true }, 'packaged editor reads map seeds from writable profile');
+  const planStatus = await request('/api/strategy/chatgpt/status');
+  assert.equal(planStatus.data.connected, false);
+  const login = await request('/api/strategy/chatgpt/start', 'POST', {});
+  assert.equal(login.status, 200);
+  assert.equal(new URL(login.data.url).searchParams.get('redirect_uri'), `${base}/auth/callback`);
+  const forgedCallback = await fetch(`${base}/auth/callback?state=forged&code=never-exchange&client_id=oaiapp_invalid`);
+  assert.equal(forgedCallback.status, 400);
+  assert.equal(forgedCallback.headers.get('referrer-policy'), 'no-referrer');
   assert.equal(created.status, 201);
   const gameId = created.data.game.id;
   const legacy = (await request('/api/runtime/json/world')).data;
@@ -97,4 +109,23 @@ test('simulation checkpoints persist through the real API; invalid writes/import
   assert.deepEqual((await request(`/api/games/${copyId}`)).data, unchanged);
   assert.equal((await request(`/api/games/${other.data.game.id}/simulation/advance`, 'POST', { step: 'day', expectedRevision: 0 })).status, 400);
   assert.equal((await request('/api/games/missing-clock-game/simulation/advance', 'POST', { step: 'day', expectedRevision: 0 })).status, 404);
+
+  const nativeId = other.data.game.id;
+  const initialized = await request(`/api/games/${nativeId}/simulation/start`, 'POST', { seed: 20161208 });
+  assert.equal(initialized.status, 200);
+  assert.equal(initialized.data.game.simulationMode, 'native');
+  assert.equal(initialized.data.world.simulation.rulesVersion, 2);
+  assert.equal((await request('/api/runtime/json/world', 'PUT', initialized.data.world)).status, 409);
+  assert.equal((await request(`/api/games/${nativeId}`, 'PUT', { gamePatch: { gameDate: '2020-01-01' } })).status, 409);
+  const policy = await request(`/api/games/${nativeId}/simulation/decision`, 'POST', { type: 'tax', value: 45, expectedRevision: 0 });
+  assert.equal(policy.status, 200);
+  const nativeStep = await request(`/api/games/${nativeId}/simulation/advance`, 'POST', { step: 'week', expectedRevision: 1 });
+  assert.equal(nativeStep.status, 200);
+  const player = nativeStep.data.world.strategy.player;
+  assert.equal(nativeStep.data.world.strategy.countries[player].tax, 4500);
+  const nativeBundle = (await request(`/api/games/${nativeId}/export`)).data;
+  const restoredNative = await request('/api/games/import', 'POST', nativeBundle);
+  assert.equal(restoredNative.status, 201);
+  assert.equal(restoredNative.data.game.simulationMode, 'native');
+  assert.deepEqual(restoredNative.data.data.world.strategy, nativeStep.data.world.strategy);
 });

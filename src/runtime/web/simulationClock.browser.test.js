@@ -37,7 +37,8 @@ test('web clock commits across two Chromium tabs and rolls back failed IndexedDB
       clearTimeout(timer);
     }
     if (server?.listening) await new Promise((resolve) => server.close(resolve));
-    fs.rmSync(profile, { recursive: true, force: true });
+    // Chromium helper processes may finish flushing just after the parent exits.
+    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   server = http.createServer((req, res) => {
     const pathname = new URL(req.url, 'http://localhost').pathname;
@@ -199,5 +200,28 @@ test('web clock commits across two Chromium tabs and rolls back failed IndexedDB
     assert.equal(result.reply.status, 500);
     assert.deepEqual(result.after, result.before);
     assert.deepEqual(result.indexAfter, result.indexBefore);
+  });
+
+  await t.test('a native game starts, applies policy, advances and blocks legacy writers in real IndexedDB', async () => {
+    const result = await evaluate(first, `(async()=>{
+      const record={id:'native',meta:{id:'native',scenarioId:'scenario',updatedAt:'2026-01-01T00:00:00.000Z'},json:{game:{country:'Germany',gameDate:'2016-12-08'},world:{ownerSchema:4,polityOverrides:{Germany:{},France:{},Russia:{}}}}};
+      await idb.idbPutPair(idb.STORES.games,record,idb.STORES.gameMeta,{id:'native',meta:record.meta});
+      await idb.kvPut('game-manifest',{activeGameId:'native',order:['native','clock']});
+      const call=async(op,body)=>{const r=await library.handleGames({method:'POST',segments:['native','simulation',op],body});return {status:r.status,data:await r.json()};};
+      const started=await call('start',{seed:7});
+      const policy=await call('decision',{type:'tax',value:45,expectedRevision:0});
+      const advanced=await call('advance',{step:'week',expectedRevision:1});
+      const raw=await library.handleRuntimeJson({method:'PUT',segments:['json','world'],body:started.data.world});
+      const patch=await library.handleGames({method:'PUT',segments:['native'],body:{gamePatch:{gameDate:'2020-01-01'}}});
+      const saved=await idb.idbGet(idb.STORES.games,'native');
+      return {started:started.status,policy:policy.status,advanced:advanced.status,raw:raw.status,patch:patch.status,saved};
+    })()`);
+    assert.equal(result.started, 200);
+    assert.equal(result.policy, 200);
+    assert.equal(result.advanced, 200);
+    assert.equal(result.raw, 409);
+    assert.equal(result.patch, 409);
+    assert.equal(result.saved.json.world.strategy.countries.Germany.tax, 4500);
+    assert.equal(result.saved.json.game.gameDate, '2016-12-15');
   });
 });

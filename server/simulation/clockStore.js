@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { prepareClockAdvance, validateClockRequest, validateClockPair } from './clockCommand.js';
+import { prepareSimulationOperation, validateClockPair } from './clockCommand.js';
 export { ClockRequestError } from './clockCommand.js';
 
 const JOURNAL = '.simulation-clock-journal.json';
@@ -57,23 +57,28 @@ export function recoverSimulationClock(directory) {
  * intent cannot interleave with another HTTP request. Multiple server processes
  * writing the same data directory are unsupported.
  */
-export function commitSimulationClock(directory, request) {
+export function commitSimulationOperation(directory, operation, request, context = {}) {
   recoverSimulationClock(directory);
-  const command = validateClockRequest(request);
   const pair = {
     game: readJson(path.join(directory, 'game.json')),
     world: readJson(path.join(directory, 'world.json')),
     meta: readJson(path.join(directory, 'game-instance.json')),
   };
-  const next = prepareClockAdvance(pair, command, path.basename(directory));
+  // Older createGame records omitted the redundant id from metadata; the
+  // validated directory identity remains authoritative for those saves.
+  if (pair.meta.id === undefined) pair.meta.id = path.basename(directory);
+  const next = prepareSimulationOperation(pair, operation, request, path.basename(directory), context);
   // Metadata belongs to the commit too: a recovered turn must invalidate client
   // asset URLs even if the process died before updating the catalog token.
   const previousTime = Date.parse(pair.meta.updatedAt);
   const updatedAt = new Date(Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0)).toISOString();
-  const payload = JSON.stringify({ game: next.game, world: next.world, meta: { ...pair.meta, updatedAt } });
+  const committedPair = validateClockPair({ game: next.game, world: next.world, meta: { ...pair.meta, updatedAt } }, path.basename(directory));
+  const payload = JSON.stringify(committedPair);
   atomicJson(path.join(directory, JOURNAL), { schema: SCHEMA, payload, sha256: digest(payload) });
   // From this point the turn is committed intent. Failure leaves the journal:
   // recovery rolls forward; an identical request then conflicts rather than double-advancing.
   recoverSimulationClock(directory);
   return next;
 }
+
+export const commitSimulationClock = (directory, request) => commitSimulationOperation(directory, 'advance', request);

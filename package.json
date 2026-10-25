@@ -8,6 +8,7 @@
     "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
+    "build:strategy:win": "node scripts/fetch-fmg.mjs --required && npm run build && electron-builder --win dir --x64 --config electron-builder.strategy.yml --publish never",
     "dev": "vite",
     "dev:web": "node scripts/seed-web-defaults.mjs && vite --mode web",
     "build": "vite build",

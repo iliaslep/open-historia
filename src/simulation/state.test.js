@@ -67,7 +67,7 @@ test('legacy worlds stay in legacy mode; explicit simulation survives normalizat
 });
 
 test('unknown versions and malformed headers fail without modifying input', () => {
-  for (const patch of [{ schemaVersion: 2 }, { schemaVersion: 0 }, { rulesVersion: 2 },
+  for (const patch of [{ schemaVersion: 2 }, { schemaVersion: 0 }, { rulesVersion: 99 },
     { revision: -1 }, { revision: 0.5 }, { revision: Number.MAX_SAFE_INTEGER + 1 },
     { scenarioId: '' }, { scenarioId: ' padded ' }, { date: '2016-02-30' },
     { date: '2016-2-08' }, { date: '2016-12-08T00:00:00Z' }, { rng: null }, { extra: true }]) {

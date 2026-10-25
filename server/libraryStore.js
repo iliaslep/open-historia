@@ -1,4 +1,4 @@
-import { ClockRequestError, commitSimulationClock, recoverSimulationClock } from "./simulation/clockStore.js";
+import { ClockRequestError, commitSimulationOperation, recoverSimulationClock } from "./simulation/clockStore.js";
 import { readWorldSimulation } from "./simulation/state.js";
 /*! Open Historia — portions (regions.geojson scenario asset + custom-map seeding) © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 import fs from "fs";
@@ -1714,6 +1714,7 @@ const buildGameCatalog = () => {
       cacheToken,
       canDelete: true,
       country: String(gameData?.country ?? "").trim(),
+      simulationMode: gameData?.simulationMode || "",
        coverImageUrl: ownCoverImageUrl ?? scenario?.coverImageUrl ?? null,
        currentDate: String(gameData?.gameDate ?? "").trim(),
        eventCount: Array.isArray(events) ? events.length : 0,
@@ -2349,6 +2350,10 @@ const updateGame = (
   }
 
   const currentMeta = readGameMeta(gameId);
+  if ((world !== undefined || worldPatch !== undefined || game !== undefined || gamePatch !== undefined || storage !== undefined)
+    && readJsonFile(getGameJsonPath(gameId, "game"), {}).simulationMode === "native") {
+    throw new ClockRequestError("Расчётная партия изменяется только через команды стратегии.", 409);
+  }
   writeGameMeta(gameId, {
     accentColor: String(accentColor ?? currentMeta.accentColor).trim() || currentMeta.accentColor,
                 archived: typeof archived === "boolean" ? archived : currentMeta.archived,
@@ -3217,6 +3222,9 @@ const writeRuntimeJsonAsset = (assetKey, value, { readBack = true } = {}) => {
     activeGameId = details.game.id;
     console.log(`No active game — created "${activeGameId}" from scenario "${scenario.id}".`);
   }
+  if (readJsonFile(getGameJsonPath(activeGameId, "game"), {}).simulationMode === "native") {
+    throw new ClockRequestError("В расчётном режиме запись legacy-движка запрещена.", 409);
+  }
   // Authors and the AI may reference a country by an alias, current display
   // name, or legacy code; the stored form is the stable polity lineage key.
   //
@@ -3850,12 +3858,19 @@ const writeGameSnapshots = (gameId, snapshots) => {
 };
 
 // Per-game addressing avoids advancing a different party after an active-game switch.
-const advanceGameClock = (gameId, request) => {
+const advanceGameClock = (gameId, request, operation = "advance") => {
   ensureGameStore();
   if (!fs.existsSync(getGameMetaPath(gameId))) throw new ClockRequestError(`Game not found: ${gameId}`, 404);
   getGameSummary(gameId);
   try {
-    return { gameId, ...commitSimulationClock(getGameDirectory(gameId), request) };
+    let context = {};
+    if (operation === "start") {
+      const scenarioId = readGameMeta(gameId).scenarioId;
+      const geometry = readJsonFile(getScenarioUploadPath(scenarioId, "regionsGeojson"), null)
+        || readJsonFile(STOCK_REGIONS_PATH, null);
+      context = { scenarioId, geometry };
+    }
+    return { gameId, ...commitSimulationOperation(getGameDirectory(gameId), operation, request, context) };
   } finally {
     // A failed projection may already have durable intent and be recovered next read.
     invalidateCatalogs();

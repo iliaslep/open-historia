@@ -1,6 +1,7 @@
 // @ts-check
 import { addGameDays, addGameMonths, diffGameDays } from '../gameDates.js';
 import { readWorldSimulation, validateSimulationState } from './state.js';
+import { advanceStrategy } from './strategy.js';
 
 /** @typedef {import('./state.js').SimulationState} SimulationState */
 /** @typedef {'day' | 'week' | 'month'} TimeStep */
@@ -69,6 +70,19 @@ export function advanceSimulationClock(input, step) {
   const next = advanceSimulation(simulation, step);
   const result = structuredClone(input);
   result.game.gameDate = next.date;
+  if (simulation.rulesVersion === 2) {
+    const advanced = advanceStrategy(input.world.strategy, simulation.date, next.date, simulation.rng);
+    result.world.strategy = advanced.strategy;
+    next.rng = advanced.rng;
+    const ownership = { .../** @type {Record<string, string>} */ (input.world.regionOwnershipOverrides || {}) };
+    const sovereignty = { .../** @type {Record<string, string>} */ (input.world.regionSovereigntyOverrides || {}) };
+    for (const [id, region] of Object.entries(advanced.strategy.regions || {})) {
+      ownership[id] = region.owner;
+      if (region.owner !== region.sovereign) sovereignty[id] = region.sovereign;
+    }
+    result.world.regionOwnershipOverrides = ownership;
+    result.world.regionSovereigntyOverrides = sovereignty;
+  }
   result.world.simulation = next;
   return { ...result, days: next.revision - simulation.revision };
 }

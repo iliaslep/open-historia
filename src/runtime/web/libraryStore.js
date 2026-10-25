@@ -1,5 +1,5 @@
 import { readWorldSimulation } from "../../../server/simulation/state.js";
-import { ClockRequestError, prepareClockAdvance, validateClockRequest } from "../../../server/simulation/clockCommand.js";
+import { ClockRequestError, prepareSimulationOperation } from "../../../server/simulation/clockCommand.js";
 /*! Open Historia — web-mode library/scenario/game/runtime store © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 // Browser (IndexedDB) port of server/libraryStore.js. Backs /api/library,
 // /api/scenarios*, /api/games*, /api/runtime/json*, /api/runtime/pmtiles* in web
@@ -77,6 +77,7 @@ const projectGameMeta = (record) => {
     cover: record.cover ?? null,
     assetStatus: getGameAssetStatus(record),
     country: String(game?.country ?? "").trim(),
+    simulationMode: game?.simulationMode || "",
     currentDate: String(game?.gameDate ?? "").trim(),
     round: Number.isFinite(Number(game?.round)) && Number(game.round) > 0 ? Math.trunc(Number(game.round)) : 1,
     eventCount: Array.isArray(events) ? events.length : 0,
@@ -299,6 +300,7 @@ const getGameCatalog = async (scenarioCatalog, gameMetas) => {
       cacheToken,
       canDelete: true,
       country: proj.country ?? "",
+      simulationMode: proj.simulationMode || "",
       coverImageUrl: ownCoverImageUrl ?? scenario?.coverImageUrl ?? null,
       currentDate: proj.currentDate ?? "",
       eventCount: proj.eventCount ?? 0,
@@ -724,16 +726,21 @@ const writeRuntimeJsonAssetLocked = async (assetKey, value) => {
     activeGame = await getGame(details.game.id);
   }
 
+  if (activeGame.json?.game?.simulationMode === "native") throw new ClockRequestError("В расчётном режиме legacy-запись запрещена.", 409);
   let canonical = value;
   if (assetKey === "world") canonical = canonicalizeWorldCountryRefs(value);
   else if (assetKey === "game") canonical = canonicalizeGameCountry(value);
   else if (assetKey === "colors") canonical = canonicalizeColorKeys(value, activeGame.json?.world ?? null);
 
-  if (OPTIONAL_JSON_ASSET_KEYS.includes(assetKey)) activeGame[assetKey] = canonical;
-  else if (assetKey === "snapshots") activeGame.snapshots = canonical;
-  else activeGame.json = { ...activeGame.json, [assetKey]: canonical };
-  writeGameMeta(activeGame, {});
-  await putGame(activeGame);
+  await idbUpdatePair(STORES.games, activeGame.id, STORES.gameMeta, (latest) => {
+    if (!latest) throw new Error("Game no longer exists.");
+    if (latest.json?.game?.simulationMode === "native") throw new ClockRequestError("В расчётном режиме legacy-запись запрещена.", 409);
+    if (OPTIONAL_JSON_ASSET_KEYS.includes(assetKey)) latest[assetKey] = canonical;
+    else if (assetKey === "snapshots") latest.snapshots = canonical;
+    else latest.json = { ...latest.json, [assetKey]: canonical };
+    writeGameMeta(latest, {});
+    return latest;
+  }, projectGameMeta);
   return readRuntimeJsonAsset(assetKey);
 };
 
@@ -988,11 +995,13 @@ const createGame = async (body = {}) => {
 const updateGame = async (id, body = {}) => {
   readWorldSimulation(body.world);
   readWorldSimulation(body.worldPatch);
-  const record = await getGame(id);
-  if (!record) throw new Error(`Game not found: ${id}`);
-  writeGameMeta(record, pickMetaUpdates(body));
-  applyJsonMutations(record, body, true, "game");
-  await putGame(record);
+  await idbUpdatePair(STORES.games, id, STORES.gameMeta, (record) => {
+    if (!record) throw new Error(`Game not found: ${id}`);
+    if (["game", "gamePatch", "world", "worldPatch", "storage"].some((key) => body[key] !== undefined) && record.json?.game?.simulationMode === "native") throw new ClockRequestError("Используйте команды стратегии.", 409);
+    writeGameMeta(record, pickMetaUpdates(body));
+    applyJsonMutations(record, body, true, "game");
+    return record;
+  }, projectGameMeta);
   if (body.setActive) await setActiveGame(id);
   return getGameDetails(id);
 };
@@ -1518,7 +1527,7 @@ export const handleScenarios = async ({ method, segments, body, rawBody, content
     return null;
   } catch (error) {
     // Reads (GET details/asset) → 404; every mutation → 400 (mirrors server.js).
-    return errorResponse(error.message, method === "GET" ? 404 : 400);
+    return errorResponse(error.message, error instanceof ClockRequestError ? error.status : method === "GET" ? 404 : 400);
   }
 };
 
@@ -1689,13 +1698,25 @@ const writeGameSnapshots = async (id, snapshots) => {
   return { ok: true };
 };
 
-const advanceGameClock = (id, request) => serializeWrite(async () => {
-  const command = validateClockRequest(request);
+const advanceGameClock = (id, request, operation = "advance") => serializeWrite(async () => {
+  let result;
+  let context = {};
+  if (operation === "start") {
+    const game = await getGame(id);
+    if (!game) throw new ClockRequestError(`Game not found: ${id}`, 404);
+    const scenarioId = game.meta?.scenarioId;
+    const scenario = await getScenario(scenarioId);
+    let geometry = parseJsonValue(scenario?.geojson?.regionsGeojson, null);
+    const bundled = bundledMapUrlOf(scenario);
+    if (!geometry && bundled) geometry = await fetchBuiltInRegionsGeojson(bundled);
+    context = { scenarioId, geometry };
+  }
   const record = await idbUpdatePair(STORES.games, id, STORES.gameMeta, (current) => {
     if (!current) throw new ClockRequestError(`Game not found: ${id}`, 404);
-    const next = prepareClockAdvance({
+    const next = prepareSimulationOperation({
       game: jsonAsset(current, "game"), world: jsonAsset(current, "world"), meta: current.meta ?? {},
-    }, command, id);
+    }, operation, request, id, context);
+    result = next;
     current.json = { ...current.json, game: next.game, world: next.world };
     const previousTime = Date.parse(current.meta.updatedAt);
     const updatedAt = new Date(Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0)).toISOString();
@@ -1704,7 +1725,7 @@ const advanceGameClock = (id, request) => serializeWrite(async () => {
   }, projectGameMeta);
   return {
     gameId: id, game: jsonAsset(record, "game"), world: jsonAsset(record, "world"),
-    days: record.json.world.simulation.revision - command.expectedRevision,
+    days: result.days,
   };
 });
 
@@ -1720,9 +1741,9 @@ export const handleGames = async ({ method, segments, body, rawBody, contentType
     if (id === "import" && method === "POST") return jsonResponse(await importGameBundle(body ?? {}), 201);
 
     const sub = segments[1];
-    if (sub === "simulation" && segments[2] === "advance" && segments.length === 3 && method === "POST") {
+    if (sub === "simulation" && ["advance", "start", "decision"].includes(segments[2]) && segments.length === 3 && method === "POST") {
       try {
-        return jsonResponse(await advanceGameClock(id, body));
+        return jsonResponse(await advanceGameClock(id, body, segments[2]));
       } catch (error) {
         return errorResponse(error.message, error instanceof ClockRequestError ? error.status : 500);
       }
@@ -1750,7 +1771,7 @@ export const handleGames = async ({ method, segments, body, rawBody, contentType
     }
     return null;
   } catch (error) {
-    const status = method === "GET" ? 404 : 400;
+    const status = error instanceof ClockRequestError ? error.status : method === "GET" ? 404 : 400;
     return errorResponse(error.message, status);
   }
 };
@@ -1763,6 +1784,6 @@ export const handleRuntimeJson = async ({ method, segments, body }) => {
     if (method === "PUT") return jsonResponse(await writeRuntimeJsonAsset(key, body ?? {}));
     return null;
   } catch (error) {
-    return errorResponse(error.message, method === "GET" ? 404 : 400);
+    return errorResponse(error.message, error instanceof ClockRequestError ? error.status : method === "GET" ? 404 : 400);
   }
 };

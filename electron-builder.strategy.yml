@@ -1,0 +1,30 @@
+appId: io.openhistoria.strategy.local
+productName: Open Historia Strategy
+extraMetadata:
+  name: open-historia-strategy
+  version: 0.1.0
+  main: electron/strategy.cjs
+directories:
+  output: release/strategy
+publish: null
+files:
+  - LICENSE
+  - dist/**
+  - "!dist/assets/regions-seed.geojson"
+  - "!dist/assets/cities-seed.json"
+  - server/**
+  - "!server/data/**"
+  - "!server/**/*.test.js"
+  - electron/strategy.cjs
+  - scripts/fetch-map-assets.mjs
+  - scripts/map-assets.json
+  - public/lang/**
+  - fmg/dist/**
+  - package.json
+  - "!**/*.map"
+asarUnpack:
+  - scripts/**
+win:
+  target: dir
+  signAndEditExecutable: false
+  artifactName: Open-Historia-Strategy-Windows

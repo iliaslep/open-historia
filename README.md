@@ -1,3 +1,5 @@
+Автономная стратегия для Windows: [инструкция на русском](PLAY_WINDOWS_RU.md).
+
 ## License & Copyright
 
 Copyright (C) 2026 Open Historia
