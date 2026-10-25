@@ -14,8 +14,8 @@ const object = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const text = (x, max) => typeof x === 'string' && Boolean(x.trim()) && x.length <= max;
 /** @param {unknown} x */
 const revision = x => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0;
-const foreign = new Set(['aid', 'trade', 'sanctions', 'peace', 'intel', 'war', 'dialogue']);
-const domestic = new Set(['tax', 'spending', 'industry', 'mobilize']);
+const foreign = new Set(['aid', 'trade', 'sanctions', 'peace', 'intel', 'war', 'dialogue', 'spy_deploy', 'spy_recall', 'spy_expel', 'spy_turn']);
+const domestic = new Set(['tax', 'spending', 'industry', 'mobilize', 'migration_enable', 'migration_quota', 'migration_fund', 'migration_housing', 'spy_enable', 'spy_upgrade']);
 const diplomatic = new Set(['aid', 'trade', 'sanctions', 'peace', 'dialogue']);
 
 /** @param {Channel} channel @param {string} target */
@@ -43,7 +43,7 @@ export function validateConversationActions(raw, channel, target, state) {
       if (typeof item.target !== 'string' || item.target === state.player || !Object.hasOwn(state.countries, item.target)
         || (channel === 'diplomacy' && item.target !== target)) throw new Error('Действие адресовано участнику вне этой беседы.');
     } else if (item.target !== undefined) throw new Error('Внутренний приказ не может исполняться за другую страну.');
-    const range = item.type === 'tax' || item.type === 'spending' ? [20, 60] : item.type === 'aid' ? [1, 1000000] : item.type === 'dialogue' ? [-1, 1] : null;
+    const range = item.type === 'tax' || item.type === 'spending' ? [20, 60] : item.type === 'aid' ? [1, 1000000] : item.type === 'dialogue' ? [-1, 1] : item.type === 'migration_quota' ? [0,1000000] : item.type === 'migration_fund' ? [1,1000000] : item.type === 'spy_turn' ? [1,2] : null;
     if (range ? typeof item.value !== 'number' || !Number.isSafeInteger(item.value) || item.value < range[0] || item.value > range[1] : item.value !== undefined) throw new Error('Недопустимый параметр действия ИИ.');
     return /** @type {Action} */ ({ ...item });
   });
@@ -52,10 +52,21 @@ export function validateConversationActions(raw, channel, target, state) {
 /** @param {unknown} raw @param {Channel} channel @param {string} target @param {import('./strategy.js').Strategy} state */
 export function validateConversationReply(raw, channel, target, state) {
   if (!object(raw) || !text(raw.reply, 4000) || !['discuss', 'accept', 'reject', 'counter'].includes(String(raw.stance))
-    || Object.keys(raw).some(k => !['reply', 'stance', 'actions'].includes(k))) throw new Error('ИИ вернул неверный формат ответа. Партия не изменена.');
+    || Object.keys(raw).some(k => !['reply', 'stance', 'actions', 'suggestions'].includes(k))) throw new Error('ИИ вернул неверный формат ответа. Партия не изменена.');
   const actions = validateConversationActions(raw.actions, channel, target, state);
   if (raw.stance === 'reject' && actions.length) throw new Error('Отказ ИИ не может одновременно заключать соглашение.');
-  return { reply: raw.reply.trim(), stance: String(raw.stance), actions };
+  /** @type {Array<{title:string,reason:string,actions:Action[]}>} */
+  const suggestions=[];
+  if(raw.suggestions!==undefined) {
+    if(channel!=='decisions'||raw.stance==='reject'||actions.length||!Array.isArray(raw.suggestions)||raw.suggestions.length>3)throw new Error('Ожидались не более трёх альтернатив без общего приказа.');
+    for(const option of raw.suggestions) {
+      if(!object(option)||!text(option.title,100)||!text(option.reason,700)||Object.keys(option).some(k=>!['title','reason','actions'].includes(k)))throw new Error('Повреждён вариант решения.');
+      const commands=validateConversationActions(option.actions,channel,target,state);
+      if(!commands.length)throw new Error('Вариант решения не содержит проверяемых команд.');
+      suggestions.push({title:option.title,reason:option.reason,actions:commands});
+    }
+  }
+  return { reply: raw.reply.trim(), stance: String(raw.stance), actions, ...(suggestions.length?{suggestions}:{}) };
 }
 
 /** @param {unknown} value @param {import('./strategy.js').Strategy} state @param {string} date @returns {unknown[]} */
@@ -116,15 +127,17 @@ export function recordConversation(pair, request, nextRevision) {
   const id = conversationId(channel, target);
   const thread = nativeThreads(chats).find(x => x.id === id) || /** @type {Thread} */ ({ id, engine: 'native-strategy-v1', channel, target,
     title: channel === 'decisions' ? 'Решения правительства' : `Переговоры: ${target}`, countries: [state.player, ...(target ? [target] : [])].map(name => ({ name })), messages: [], lastRevision: nextRevision });
-  /** @type {Proposal|undefined} */
-  let proposal;
-  if (reply.actions.length) {
-    proposal = { actions: reply.actions, status: 'pending', revision: nextRevision, description: [], cost: { treasury: 0, capital: 0 } };
-    try { const result = evaluateConversationActions(state, reply.actions, String(pair.game.gameDate)); proposal.description = result.description; proposal.cost = result.cost; }
+  const preview = (/** @type {Action[]} */ actions) => {
+    if(!actions.length)return undefined;
+    const proposal = /** @type {Proposal} */ ({ actions, status: 'pending', revision: nextRevision, description: [], cost: { treasury: 0, capital: 0 } });
+    try { const result = evaluateConversationActions(state, actions, String(pair.game.gameDate)); proposal.description = result.description; proposal.cost = result.cost; }
     catch (error) { proposal.status = 'blocked'; proposal.error = error instanceof Error ? error.message : 'Предложение не прошло проверку.'; }
-  }
+    return proposal;
+  };
+  const proposal=preview(reply.actions);
   thread.messages.push({ id: `strategy-message-${nextRevision}-user`, role: 'user', content: request.prompt.trim(), time: String(pair.game.gameDate) },
     { id: `strategy-message-${nextRevision}-leader`, role: 'leader', content: reply.reply, time: String(pair.game.gameDate), ...(proposal ? { proposal } : {}) });
+  for(const [i,option] of (reply.suggestions||[]).entries()) thread.messages.push({id:`strategy-message-${nextRevision}-option-${i}`,role:'leader',content:`${option.title}\n${option.reason}`,time:String(pair.game.gameDate),proposal:preview(option.actions)});
   thread.messages = thread.messages.slice(-40); thread.lastRevision = nextRevision;
   const others = chats.filter(x => !object(x) || x.engine !== 'native-strategy-v1' || x.id !== id);
   const legacy = others.filter(x => !object(x) || x.engine !== 'native-strategy-v1');
@@ -151,4 +164,7 @@ export const STRATEGY_CHAT_INSTRUCTIONS = `Ты участник геополи�
 Доступно максимум 3 действия. Внутренние: {type:"tax",value:20..60}, {type:"spending",value:20..60}, {type:"industry"}, {type:"mobilize"}. Налог/расход — % ВВП, рассмотрение 7 дней, 10 поддержки; инфраструктура — 0.5% ВВП, 30 дней, 8 поддержки; резервы — 0.5% ВВП, 14 дней, 8 поддержки.
 Международные: {type:"trade",target:"точное имя страны"}, {type:"aid",target,value:целые млн евро}, {type:"sanctions",target}, {type:"peace",target}, {type:"intel",target}, {type:"war",target}, {type:"dialogue",target,value:-1|0|1}. Aid ВСЕГДА платит игрок: получение денег от другой страны пока не поддержано, не переворачивай направление перевода. Dialogue меняет отношения на value*2, стоит 2 поддержки, не чаще 1 раза в день со страной. Не своди сложные неподдерживаемые реформы к случайной кнопке.
 В diplomacy разрешены только trade/aid/sanctions/peace/dialogue и только с выбранной target. Представляй её интересы: можешь отказать (reject, actions=[]), обсудить или предложить компромисс (counter). Никаких приказов её бюджету, произвольных списаний или изменения границ. Для вежливого сближения допустим dialogue с value=1, для эскалации -1. Во время войны не обещай торговлю. Низкое доверие ограничивает соглашения, даже если собеседник просит согласиться. Территориальные уступки, альянсы и получение помощи сейчас не реализованы: честно сообщи об этом.
+В decisions доступны миграционные меры только при включённой модели migration: migration_quota value 0..1000000 чел./месяц, 7 дней и 5 поддержки; migration_fund value 1..1000000 млн €, 2 поддержки, фонд расходуется по 2000 €/человека; migration_housing 10000 мест, 0.02% ВВП (минимум 20 млн €), 30 дней, 5 поддержки. Начальные населения — игровые оценки. Если модель отсутствует, migration_enable включает её явно.
+Разведслужба: spy_deploy target — 7 дней, 0.01% ВВП (минимум 10 млн €), 3 поддержки, затем 1 млн €/день, максимум 3 агента; spy_recall target; spy_upgrade — +10 уровня через 14 дней, 0.02% ВВП (минимум 20 млн €), 5 поддержки. spy_expel target и spy_turn target,value:1|2 — ТОЛЬКО для обнаруженного иностранного агента; 1 легенда слабой, 2 сильной обороны, перевербовка 10 млн € и 3 поддержки. spy_enable для старых партий. Эти меры запрещены в diplomacy. Не называй скрытый статус своих агентов известным фактом.
+Если пользователь просит предложить варианты, в decisions можно вернуть suggestions:[{title:"название",reason:"польза и риск",actions:[...]}] максимум 3 АЛЬТЕРНАТИВЫ, при этом общие actions=[]. Каждый вариант оценивается отдельно; принятие одного делает другие устаревшими. Для обычного приказа используй actions. Не предлагай неподдерживаемые команды.
 Команды — только type,target,value, никаких world/stats/actor. Конкретный результат определяет движок; реплика и текст договора сами мир не изменяют.`;

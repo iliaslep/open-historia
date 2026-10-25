@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: strategy-v0.2.1-release
+  group: strategy-v0.3.0-release
   cancel-in-progress: false
 
 jobs:
@@ -23,7 +23,7 @@ jobs:
       # Build the exact reviewed game version, not the delivery branch's tip.
       - uses: actions/checkout@v5
         with:
-          ref: strategy-v0.2.1
+          ref: strategy-v0.3.0
 
       - uses: actions/setup-node@v5
         with:
@@ -41,7 +41,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Check authentication and callback regressions on Windows
-        run: node --test server/chatgptPlan.test.js server/chatgptResponse.test.js server/strategyChat.test.js server/simulationPersistence.test.js server/serverImports.test.js
+        run: node --test server/chatgptPlan.test.js server/chatgptResponse.test.js server/strategyChat.test.js server/simulationPersistence.test.js server/serverImports.test.js server/strategy.test.js server/society.test.js server/intelligence.test.js server/recommendations.test.js src/simulation/time.test.js
 
       - name: Check real Electron networking and interrupted streams
         run: |
@@ -55,7 +55,7 @@ jobs:
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           import {createHash} from 'node:crypto';
-          const names = ['Open-Historia-Strategy-0.2.1-Windows-x64.zip', 'Open-Historia-Strategy-0.2.1-Source.zip'];
+          const names = ['Open-Historia-Strategy-0.3.0-Windows-x64.zip', 'Open-Historia-Strategy-0.3.0-Source.zip'];
           const lines = names.map(name => `${createHash('sha256').update(fs.readFileSync(`release/${name}`)).digest('hex')}  ${name}`);
           fs.writeFileSync('release/SHA256SUMS.txt', lines.join('\n') + '\n');
           JS
@@ -65,5 +65,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release upload strategy-v0.2.1 release/Open-Historia-Strategy-0.2.1-Windows-x64.zip release/Open-Historia-Strategy-0.2.1-Source.zip release/SHA256SUMS.txt release/native-network-check.json PLAY_WINDOWS_RU.md --clobber
-          gh release edit strategy-v0.2.1 --draft=false --prerelease --latest=false
+          gh release upload strategy-v0.3.0 release/Open-Historia-Strategy-0.3.0-Windows-x64.zip release/Open-Historia-Strategy-0.3.0-Source.zip release/SHA256SUMS.txt release/native-network-check.json PLAY_WINDOWS_RU.md --clobber
+          gh release edit strategy-v0.3.0 --draft=false --prerelease --latest=false

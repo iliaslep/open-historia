@@ -178,3 +178,42 @@ for (const target of ['.simulation-clock-journal.json', 'game.json', 'world.json
     assert.throws(() => commitSimulationOperation(directory, 'chat-apply', { expectedRevision: 1, messageId: 'strategy-message-1-leader' }), e => e.status === 409);
   });
 }
+
+test('AI alternatives are individually priced, one choice invalidates the others, new commands retain engine authority', async()=>{
+  const f=fixture(),before=structuredClone(f.pair().world.strategy);
+  f.answer({reply:'Три направления политики.',stance:'discuss',actions:[],suggestions:[
+    {title:'Интеграция',reason:'Ускоряет адаптацию, но связывает казну.',actions:[{type:'migration_fund',value:10}]},
+    {title:'Разведка',reason:'Качество оценок выше, результат через 14 дней.',actions:[{type:'spy_upgrade'}]},
+    {title:'Недоступный бюджет',reason:'Недостаточно ресурсов.',actions:[{type:'migration_fund',value:1000000}]}]});
+  await f.send('decisions','','Предложи альтернативы');
+  assert.deepEqual(f.pair().world.strategy,before);
+  const messages=nativeThreads(f.pair().chat).at(-1).messages,options=messages.filter(m=>m.proposal);
+  assert.equal(options.length,3);assert.equal(options[0].proposal.cost.treasury,10);assert.equal(options[1].proposal.cost.treasury,640);assert.equal(options[2].proposal.status,'blocked');
+  f.operate('chat-apply',{messageId:options[0].id});
+  assert.equal(f.pair().world.strategy.migration.countries.Germany.fund,10);
+  assert.equal(f.pair().world.strategy.countries.Germany.treasury,before.countries.Germany.treasury-10);
+  assert.throws(()=>f.operate('chat-apply',{messageId:options[1].id}),/устарело/);
+});
+
+test('delegations cannot command migration or spies; malformed alternatives cannot bypass proposal validation',async()=>{
+  const f=fixture(),before=structuredClone(f.pair());
+  for(const answer of [
+    {reply:'ok',stance:'discuss',actions:[],suggestions:[{title:'x',reason:'x',actions:[{type:'spy_deploy',target:'Russia'}]}]},
+    {reply:'ok',stance:'accept',actions:[{type:'migration_quota',value:500}]},
+    {reply:'ok',stance:'accept',actions:[{type:'spy_turn',target:'France',value:2}]}]) {
+    f.answer(answer);await assert.rejects(()=>f.send('diplomacy','France'));assert.deepEqual(f.pair(),before);
+  }
+  for(const suggestions of [new Array(4).fill({title:'x',reason:'x',actions:[{type:'industry'}]}),[{title:'x',reason:'x',actions:[]}],[{title:'x',reason:'x',actions:[{type:'migration_fund',value:-1}]}]]) {
+    f.answer({reply:'ok',stance:'discuss',actions:[],suggestions});await assert.rejects(()=>f.send());assert.deepEqual(f.pair(),before);
+  }
+});
+
+test('cabinet gets its migration and sanitised spy view; foreign delegates never receive those secrets',async()=>{
+  const f=fixture();
+  f.pair().world.strategy.spycraft.spies=[{id:'secret',owner:'Russia',target:'Germany',deployedAt:'2016-12-08',status:'active',turnedAt:'',exposedAt:'',coverStory:'',suspected:false}];
+  f.answer({reply:'Обсуждаем.',stance:'discuss',actions:[]});await f.send();
+  const own=JSON.parse(f.inputs.at(-1).context);assert.ok(own.migration.own.population>0);assert.equal(own.intelligence.discovered.length,0);
+  assert.equal(JSON.stringify(own.intelligence).includes('secret'),false);
+  await f.send('diplomacy','France');const foreign=JSON.parse(f.inputs.at(-1).context);
+  assert.equal(foreign.migration,undefined);assert.equal(foreign.intelligence,undefined);
+});

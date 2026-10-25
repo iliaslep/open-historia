@@ -1,3 +1,4 @@
+import { intelligenceView } from './simulation/intelligence.js';
 import { ClockRequestError } from './simulation/clockCommand.js';
 import { nativeThreads, conversationId, validateConversation, validateConversationReply, validateNativeChats } from './simulation/conversations.js';
 import { readWorldSimulation } from './simulation/state.js';
@@ -29,7 +30,7 @@ export function createStrategyChat({ readGame, commit, ask }) {
     // never the cabinet's plans, private reports, treasury or exact readiness.
     const { relations: _privateRelations, ...ownCountry } = state.countries[state.player];
     const context = JSON.stringify({ channel, player: state.player, target, date: data.game.gameDate, dataKind: state.dataKind, history, bilateral,
-      ...(channel === 'decisions' ? { ownCountry, countries: Object.keys(state.countries).sort().slice(0, 200),
+      ...(channel === 'decisions' ? { ownCountry, migration: state.migration ? { own: state.migration.countries[state.player], flows: state.migration.flows.filter(f=>f.from===state.player||f.to===state.player).slice(-10) } : null, intelligence: intelligenceView(state), countries: Object.keys(state.countries).sort().slice(0, 200),
         projects: state.projects.filter(p => p.owner === state.player), reports: state.reports.slice(-3),
         treaties: state.treaties.filter(t => [t.a, t.b].includes(state.player)).slice(-12) } : {}) });
     if (context.length > 20000) throw new ClockRequestError('Контекст беседы слишком велик.');

@@ -8,7 +8,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { once } from 'node:events';
 import { configureChatGPTTransport } from '../server/chatgptPlan.js';
 
-export async function startChatFixture() {
+export async function startChatFixture({authenticated=true}={}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'oh-chat-ui-fixture-'));
   process.env.OH_DATA_DIR = root; process.env.OH_HOST = '127.0.0.1'; process.env.PORT = '0'; process.env.OH_VISIT_COUNT = '0';
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -37,6 +37,7 @@ export async function startChatFixture() {
       const context = JSON.parse(content.slice(0, at)), prompt = content.slice(at + 10);
       let reply = { reply: 'Уточним дальнейшие решения.', stance: 'discuss', actions: [] };
       if (prompt.includes('сломанный')) reply = { reply: 'Нельзя исполнять.', stance: 'accept', actions: [{ type: 'gdp', value: 999999 }] };
+      else if (context.channel === 'decisions' && prompt.includes('альтернатив')) reply = {reply:'Сравним два направления.',stance:'discuss',actions:[],suggestions:[{title:'Интеграция',reason:'Увеличить фонд, уменьшив свободную казну.',actions:[{type:'migration_fund',value:2}]},{title:'Инфраструктура',reason:'Ускорить рост, выделив средства на 30 дней.',actions:[{type:'industry'}]}]};
       else if (context.channel === 'decisions' && prompt.includes('налог')) reply = { reply: 'Предлагаем налоговую нагрузку 40 % с рассмотрением семь дней.', stance: 'accept', actions: [{ type: 'tax', value: 40 }] };
       else if (context.channel === 'diplomacy') {
         assert.equal(context.ownCountry, undefined); assert.equal(context.reports, undefined);
@@ -53,11 +54,13 @@ export async function startChatFixture() {
   const { httpServer } = await import('../server/server.js');
   if (!httpServer.listening) await once(httpServer, 'listening');
   const origin = `http://127.0.0.1:${httpServer.address().port}`;
+  if(authenticated) {
   const started = await fetch(origin + '/api/strategy/chatgpt/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(started.status, 200);
   authorization = new URL((await started.json()).url);
   const completed = await fetch(origin + '/auth/callback?' + new URLSearchParams({ state: authorization.searchParams.get('state'), client_id: 'oaiapp_native_chat_ui', code: 'synthetic-code' }), { redirect: 'manual' });
   assert.equal(completed.status, 303);
+  }
   return { origin, close: async () => {
     configureChatGPTTransport(undefined);
     httpServer.closeAllConnections?.(); await new Promise(resolve => httpServer.close(resolve));

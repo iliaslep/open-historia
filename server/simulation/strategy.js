@@ -4,10 +4,12 @@
 import { addGameDays, diffGameDays, normalizeGameDate } from '../gameDates.js';
 import { drawRandom } from './random.js';
 import { buildStrategyGeography } from './geography.js';
+import { createMigration, validateMigration, migrationDecision, advanceMigration } from './migration.js';
+import { createIntelligence, validateIntelligence, intelligenceDecision, advanceIntelligence, intelligenceNPC } from './intelligence.js';
 
 /** @typedef {{gdp:number, treasury:number, debt:number, tax:number, spending:number, stability:number, readiness:number, industry:number, energy:number, unemployment:number, capital:number, relations:Record<string,number>}} Country */
 /** @typedef {{owner:string, kind:'tax'|'spending'|'industry'|'mobilize', value?:number, due:string}} Project */
-/** @typedef {{version:1, dataKind:'game-estimate', player:string, countries:Record<string,Country>, regions?:Record<string,import('./geography.js').Region>, contacts?:Array<{target:string,date:string}>, history:Array<{date:string,text:string,country:string}>, projects:Project[], treaties:Array<{a:string,b:string,until:string}>, reports:Array<{date:string,target:string,confidence:number,text:string}>, intel:Array<{owner:string,target:string,due:string}>, wars:Array<{a:string,b:string,since:string}>}} Strategy */
+/** @typedef {{version:1, dataKind:'game-estimate', player:string, countries:Record<string,Country>, regions?:Record<string,import('./geography.js').Region>, migration?:import('./migration.js').Migration, spycraft?:import('./intelligence.js').Intelligence, contacts?:Array<{target:string,date:string}>, history:Array<{date:string,text:string,country:string}>, projects:Project[], treaties:Array<{a:string,b:string,until:string}>, reports:Array<{date:string,target:string,confidence:number,text:string}>, intel:Array<{owner:string,target:string,due:string}>, wars:Array<{a:string,b:string,since:string}>}} Strategy */
 /** @param {number} x @param {number} low @param {number} high */
 const clamp = (x, low, high) => Math.max(low, Math.min(high, x));
 /** @template T @param {T} value @returns {T} */
@@ -66,6 +68,8 @@ export function validateStrategy(input, at = '') {
       || region.neighbors.some((other) => other === id || !Object.hasOwn(regions, other)
         || !Array.isArray(regions[other].neighbors) || !regions[other].neighbors.includes(id))) throw new Error('Повреждена география стратегии.');
   }
+  if (raw.migration !== undefined) validateMigration(raw.migration, raw, at);
+  if (raw.spycraft !== undefined) validateIntelligence(raw.spycraft, raw, at);
   return copy(raw);
 }
 
@@ -90,7 +94,9 @@ export function createStrategy(world, player, geometry) {
     return [name, { gdp, treasury: Math.round(gdp * 0.04), debt: Math.round(gdp * 0.6), tax: 3800, spending: 3500,
       stability: 65, readiness: 45, industry: 50, energy: 60, unemployment: 7, capital: 60, relations: {} }];
   }));
-  return validateStrategy({ version: 1, dataKind: 'game-estimate', player, countries, regions, history: [], projects: [], treaties: [], reports: [], intel: [], wars: [] });
+  const s = /** @type {Strategy} */ ({ version: 1, dataKind: 'game-estimate', player, countries, regions, history: [], projects: [], treaties: [], reports: [], intel: [], wars: [] });
+  s.migration = createMigration(s); s.spycraft = createIntelligence(s);
+  return validateStrategy(s);
 }
 
 /** @param {Country} c @param {boolean} [war] */
@@ -119,7 +125,11 @@ export function strategyDecision(raw, request, date) {
     if (!Object.hasOwn(s.countries, target) || target === s.player) throw new Error('Выберите другое государство.');
     return s.countries[target];
   };
-  if (type === 'tax' || type === 'spending') {
+  if (typeof type === 'string' && type.startsWith('migration_')) {
+    note(s,date,migrationDecision(s,type,value,date,spend));
+  } else if (typeof type === 'string' && type.startsWith('spy_')) {
+    note(s,date,intelligenceDecision(s,type,target,value,date,spend));
+  } else if (type === 'tax' || type === 'spending') {
     if (!integer(value, 20, 60)) throw new Error('Допустимый диапазон: 20–60 % ВВП.');
     if (s.projects.some((p) => p.owner === s.player && p.kind === type)) throw new Error('Предыдущая реформа ещё рассматривается.');
     spend(0, 10);
@@ -228,6 +238,10 @@ export function advanceStrategy(raw, from, to, rng) {
         }
       }
     }
+    const reportNote = (/** @type {string} */ text, /** @type {string} */ country = s.player) => note(s,date,text,country);
+    advanceMigration(s,date,reportNote);
+    advanceIntelligence(s,date,rng.seed,reportNote);
+    if (date.endsWith('-01')) intelligenceNPC(s,date,reportNote);
     for (const project of s.projects.filter((p) => p.due === date)) {
       const c = s.countries[project.owner];
       if (project.kind === 'tax' || project.kind === 'spending') c[project.kind] = /** @type {number} */ (project.value);

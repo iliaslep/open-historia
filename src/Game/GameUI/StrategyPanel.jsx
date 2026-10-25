@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { activateGame, createGame, refreshLibraryCatalog, useLibraryState } from '../../runtime/library.js';
 import { dailyBudget } from '../../../server/simulation/strategy.js';
 import { saveTextToDisk } from '../../runtime/saveFile.js';
 import { acceptFor } from '../../runtime/fileAccept.js';
 import ChatGPTPanel from './ChatGPTPanel.jsx';
 import StrategyChatPanel from './StrategyChatPanel.jsx';
+import StrategySociety from './StrategySociety.jsx';
+import StrategyIntelligence from './StrategyIntelligence.jsx';
+import StrategyRecommendations from './StrategyRecommendations.jsx';
 import { strategyRequest as api } from '../../runtime/strategyRequest.js';
 import './strategy.css';
 
@@ -14,6 +17,8 @@ const label = (name) => labels[name] || name;
 
 export default function StrategyPanel() {
   const { activeGameId, activeGame, games, scenarios, loaded } = useLibraryState();
+  const activeId = useRef(activeGameId);
+  useEffect(()=>{activeId.current=activeGameId;},[activeGameId]);
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -23,6 +28,8 @@ export default function StrategyPanel() {
   const [spending, setSpending] = useState(35);
   const [aid, setAid] = useState(500);
   const [tab, setTab] = useState('decisions');
+  const [draft, setDraft] = useState('');
+  const discuss = text => {setDraft(text);setTab('decisions');};
   const [compact, setCompact] = useState(false);
   const [seed, setSeed] = useState(20161208);
   const [startDate, setStartDate] = useState('2016-12-08');
@@ -30,6 +37,7 @@ export default function StrategyPanel() {
   const refresh = async () => {
     if (!activeGameId) { setData(null); return; }
     const details = await api(`/api/games/${encodeURIComponent(activeGameId)}`);
+    if (activeId.current !== activeGameId) return;
     setData(current => current?.world?.simulation?.revision > details.data.world?.simulation?.revision ? current : details.data);
   };
   useEffect(() => {
@@ -41,12 +49,15 @@ export default function StrategyPanel() {
     if (busy) return;
     setBusy(true); setError('');
     try { await task(); }
-    catch (e) { setError(e.message); await refresh().catch(() => {}); }
+    catch (e) { setError(e.message); void refresh().catch(() => {}); }
     finally { setBusy(false); }
   };
   const strategy = data?.world?.strategy;
   const player = strategy?.countries?.[strategy.player];
   const native = Boolean(strategy && data?.game?.simulationMode === 'native');
+  useEffect(()=>{
+    if(strategy && (target===strategy.player || !Object.hasOwn(strategy.countries,target))) setTarget(Object.keys(strategy.countries).filter(id=>id!==strategy.player).sort()[0] || '');
+  },[strategy,target]);
   const acceptResult = async (result) => {
     setData(current => ({ ...current, game: result.game, world: result.world, ...(result.chat ? { chat: result.chat } : {}) }));
     await refreshLibraryCatalog({ force: true });
@@ -102,8 +113,9 @@ export default function StrategyPanel() {
         <p className="strategy-status">Пауза между ходами · изменения сохраняются автоматически</p>
         <div className="strategy-metrics"><span>Казна<strong>{money(player.treasury)} млн €</strong></span><span>Бюджет/день<strong className={budget.balance < 0 ? 'negative' : ''}>{budget.balance >= 0 ? '+' : ''}{money(budget.balance)} млн €</strong></span>
           <span>Стабильность<strong>{player.stability}/100</strong></span><span>Поддержка решений<strong>{player.capital}/100</strong></span></div>
-        <nav className="strategy-tabs">{[['decisions', 'Чат решений'], ['economy', 'Экономика'], ['diplomacy', 'Дипломатия'], ['security', 'Безопасность'], ['cabinet', 'Кабинет'], ['history', 'Сводки'], ['chatgpt', 'ChatGPT']].map(([id, text]) => <button key={id} aria-pressed={tab === id} onClick={() => setTab(id)}>{text}</button>)}</nav>
-        {tab === 'decisions' && <StrategyChatPanel key={`decisions-${activeGameId}`} gameId={activeGameId} channel="decisions" chats={data.chat} revision={data.world.simulation.revision} label={label} busy={busy} onBusy={setBusy} onResult={acceptResult} onRefresh={refresh} onApply={messageId => command('chat-apply', { messageId })} onSettings={() => setTab('chatgpt')} />}
+        <nav className="strategy-tabs">{[['decisions', 'Чат решений'], ['cabinet', 'Советники'], ['economy', 'Экономика'], ['society', 'Население'], ['diplomacy', 'Дипломатия'], ['intelligence', 'Разведка'], ['security', 'Оборона'], ['history', 'Сводки'], ['chatgpt', 'ChatGPT']].map(([id, text]) => <button key={id} aria-pressed={tab === id} onClick={() => setTab(id)}>{text}</button>)}</nav>
+        <main className={`strategy-content ${['decisions','diplomacy'].includes(tab)?'strategy-content-chat':''}`}>
+        {tab === 'decisions' && <StrategyChatPanel draft={draft} key={`decisions-${activeGameId}`} gameId={activeGameId} channel="decisions" chats={data.chat} revision={data.world.simulation.revision} label={label} busy={busy} onBusy={setBusy} onResult={acceptResult} onRefresh={refresh} onApply={messageId => command('chat-apply', { messageId })} onSettings={() => setTab('chatgpt')} />}
         {tab === 'chatgpt' && <ChatGPTPanel key={activeGameId} gameId={activeGameId} target={target} />}
         {tab === 'economy' && <section><h2>Бюджет и развитие</h2><dl><dt>Годовой ВВП, игровая оценка</dt><dd>{money(player.gdp)} млн €</dd><dt>Государственный долг</dt><dd>{money(player.debt)} млн € ({Math.round(player.debt / player.gdp * 100)} % ВВП)</dd><dt>Доходы / расходы в день</dt><dd>{money(budget.revenue)} / {money(budget.services + budget.interest + budget.military)} млн €</dd><dt>Промышленность / энергетика</dt><dd>{player.industry} / {player.energy}</dd><dt>Безработица, модель</dt><dd>{player.unemployment} %</dd></dl>
           <label>Налоговая нагрузка: {tax} % ВВП (сейчас {player.tax / 100} %)<input type="range" min="20" max="60" value={tax} onChange={(e) => setTax(Number(e.target.value))} /></label><button disabled={busy} onClick={() => decision('tax', tax)}>Внести налоговую реформу · 7 дней</button>
@@ -111,15 +123,18 @@ export default function StrategyPanel() {
           <button disabled={busy} onClick={() => decision('industry')}>Инфраструктура · {money(Math.round(player.gdp * 0.005))} млн € · 30 дней</button>
           <h3>Процессы</h3>{strategy.projects.filter((p) => p.owner === strategy.player).map((p, i) => <p key={i}>{({ tax: 'Налоговая реформа', spending: 'Бюджетная реформа', industry: 'Инфраструктура', mobilize: 'Подготовка резервов' })[p.kind]} — {p.due}</p>)}
         </section>}
-        {['diplomacy', 'security'].includes(tab) && <section><label>Государство<select value={target} disabled={busy} onChange={(e) => setTarget(e.target.value)}>{Object.keys(strategy.countries).filter((id) => id !== strategy.player).sort().map((id) => <option key={id} value={id}>{label(id)}</option>)}</select></label>
+        {['diplomacy', 'security'].includes(tab) && <section className={tab==='diplomacy'?'strategy-diplomacy':''}><label>Государство<select value={target} disabled={busy} onChange={(e) => setTarget(e.target.value)}>{Object.keys(strategy.countries).filter((id) => id !== strategy.player).sort().map((id) => <option key={id} value={id}>{label(id)}</option>)}</select></label>
           <p>Отношения: {player.relations[target] || 0}/100 · {strategy.wars.some((w) => [w.a, w.b].includes(strategy.player) && [w.a, w.b].includes(target)) ? 'Военный конфликт' : 'Мир'}</p>
           {tab === 'diplomacy' && <StrategyChatPanel key={`diplomacy-${activeGameId}-${target}`} gameId={activeGameId} channel="diplomacy" target={target} chats={data.chat} revision={data.world.simulation.revision} label={label} busy={busy} onBusy={setBusy} onResult={acceptResult} onRefresh={refresh} onApply={messageId => command('chat-apply', { messageId })} onSettings={() => setTab('chatgpt')} />}
-          {tab === 'diplomacy' ? <><button disabled={busy} onClick={() => decision('trade')}>Предложить торговое соглашение · 365 дней</button><label>Помощь, млн €<input type="number" min="1" max="1000000" value={aid} onChange={(e) => setAid(Number(e.target.value))} /></label><button disabled={busy} onClick={() => decision('aid', aid)}>Перечислить помощь</button><button disabled={busy} onClick={() => decision('sanctions')}>Ввести санкции</button><button disabled={busy} onClick={() => decision('peace')}>Предложить перемирие</button><h3>Действующие договоры</h3>{strategy.treaties.filter((t) => t.a === strategy.player || t.b === strategy.player).map((t, i) => <p key={i}>{label(t.a)} — {label(t.b)} · до {t.until}</p>)}</>
+          {tab === 'diplomacy' ? <details className="strategy-manual"><summary>Договоры и прямые распоряжения</summary><button disabled={busy} onClick={() => decision('trade')}>Предложить торговое соглашение · 365 дней</button><label>Помощь, млн €<input type="number" min="1" max="1000000" value={aid} onChange={(e) => setAid(Number(e.target.value))} /></label><button disabled={busy} onClick={() => decision('aid', aid)}>Перечислить помощь</button><button disabled={busy} onClick={() => decision('sanctions')}>Ввести санкции</button><button disabled={busy} onClick={() => decision('peace')}>Предложить перемирие</button><h3>Действующие договоры</h3>{strategy.treaties.filter((t) => t.a === strategy.player || t.b === strategy.player).map((t, i) => <p key={i}>{label(t.a)} — {label(t.b)} · до {t.until}</p>)}</details>
             : <><p>Боеготовность: {player.readiness}/100. Война увеличивает бюджетные расходы и истощает силы. {Object.keys(strategy.regions || {}).length ? "Наступления меняют контроль над соседними регионами карты, сохраняя юридический суверенитет. Морские десанты не моделируются." : "У этого сохранения нет графа территории. Создайте новую партию для наступлений на карте."}</p><button disabled={busy} onClick={() => decision('mobilize')}>Подготовить резервы · 14 дней</button><button disabled={busy} onClick={() => decision('intel')}>Сбор разведывательных сведений · 7 дней</button><button disabled={busy} onClick={() => decision('war')}>Начать военную операцию</button><h3>Разведывательные оценки</h3>{strategy.reports.slice().reverse().map((r, i) => <p key={i}>{r.date} · {label(r.target)} · доверие {r.confidence} %<br />{r.text}</p>)}</>}
         </section>}
-        {tab === 'cabinet' && <section><h2>Оценки ведомств</h2><p>Программные рекомендации на основе состояния партии.</p><h3>Финансы</h3><p>{budget.balance < 0 ? 'Расходы превышают доходы. Резервы сокращаются; после их исчерпания дефицит увеличит долг.' : 'Бюджет профицитный. Резервы позволяют финансировать инвестиции или международную помощь.'}</p><h3>Экономика</h3><p>{player.industry < 70 ? 'Модернизация промышленности может ускорить рост, но требует 0,5 % годового ВВП и 30 дней.' : 'Промышленная база развита. Сравните дальнейшие инвестиции с долговой нагрузкой.'}</p><h3>Внешняя политика</h3><p>Торговые договоры повышают потенциал роста обеих сторон. Низкое доверие препятствует согласию; санкции создают издержки и для собственной промышленности.</p><h3>Оборона</h3><p>{player.readiness < 55 ? 'Для крупной операции силы не готовы. Подготовка резервов занимает 14 дней; финансирование и политическая поддержка обязательны.' : 'Силы подготовлены, но ведение войны повышает ежедневные расходы. Избегайте истощения боеготовности.'}</p></section>}
+        {tab === 'society' && <StrategySociety key={activeGameId} strategy={strategy} label={label} busy={busy} onDecision={body=>command('decision',body)} />}
+        {tab === 'intelligence' && <StrategyIntelligence strategy={strategy} label={label} busy={busy} target={target} setTarget={setTarget} onDecision={body=>command('decision',body)} />}
+        {tab === 'cabinet' && <StrategyRecommendations strategy={strategy} date={data.game.gameDate} busy={busy} onDecision={body=>command('decision',body)} onDiscuss={discuss} />}
         {tab === 'history' && <section><h2>Хроника мира</h2>{strategy.history.length ? strategy.history.slice().reverse().map((entry, i) => <article key={i}><small>{entry.date} · {label(entry.country)}</small><p>{entry.text}</p></article>) : <p>Мир на паузе. Примите решение или продвиньте время. Другие государства самостоятельно пересматривают политику в начале месяца.</p>}</section>}
-        <footer><button disabled={busy} onClick={exportGame}>Экспорт партии</button><label className="strategy-file">Импорт партии<input type="file" accept={acceptFor('.json,application/json')} onChange={(e) => { importGame(e.target.files[0]); e.target.value = ''; }} /></label><p>Все численные стартовые данные и коэффициенты — игровые оценки. LLM не участвует в расчётах.</p><a href="?editor=1">Редактор сценариев</a> · <a href="?strategy=1">Обновить</a></footer>
+        </main>
+        <footer><details><summary>Сохранения и сведения о партии</summary><button disabled={busy} onClick={exportGame}>Экспорт партии</button><label className="strategy-file">Импорт партии<input type="file" accept={acceptFor('.json,application/json')} onChange={(e) => { importGame(e.target.files[0]); e.target.value = ''; }} /></label><p>Все численные стартовые данные и коэффициенты — игровые оценки. LLM не участвует в расчётах.</p><a href="?editor=1">Редактор сценариев</a> · <a href="?strategy=1">Обновить</a></details></footer>
       </>}
     </>}
   </aside>;

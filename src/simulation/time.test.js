@@ -112,7 +112,7 @@ test('the time module runs from a packaged server tree without client sources', 
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ type: 'module' }));
   fs.mkdirSync(path.join(root, 'server'));
   fs.cpSync(new URL('../../server/simulation/', import.meta.url), path.join(root, 'server', 'simulation'), { recursive: true });
-  fs.copyFileSync(new URL('../../server/gameDates.js', import.meta.url), path.join(root, 'server', 'gameDates.js'));
+  for (const file of ['gameDates.js','spycraft.js']) fs.copyFileSync(new URL(`../../server/${file}`, import.meta.url), path.join(root, 'server', file));
   const entry = pathToFileURL(path.join(root, 'server', 'simulation', 'time.js')).href;
   const stateEntry = pathToFileURL(path.join(root, 'server', 'simulation', 'state.js')).href;
   const output = execFileSync(process.execPath, ['--input-type=module', '-e', `
