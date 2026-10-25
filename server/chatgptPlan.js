@@ -8,8 +8,32 @@ const AUTH = 'https://auth.openai.com';
 const RESOURCE = 'https://api.openai.com/v1';
 const SCOPES = 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct';
 let desktopProtection;
+let desktopFetch;
 // The desktop entry supplies the OS-backed Electron safeStorage after app.ready.
 export function configureChatGPTProtection(protection) { desktopProtection = protection; }
+// Electron's Chromium transport honors Windows system proxies/PAC and trust
+// settings. Keep the standalone Node and test transports independently injectable.
+export function configureChatGPTTransport(fetchImpl) { desktopFetch = fetchImpl; }
+
+export class ChatGPTNetworkError extends Error {
+  constructor(error) {
+    const detail = `${error?.cause?.code || ''} ${error?.code || ''} ${error?.name || ''} ${error?.message || ''}`;
+    const categories = [
+      ['proxy', /ERR_PROXY_CONNECTION_FAILED|ERR_TUNNEL_CONNECTION_FAILED|ERR_NO_SUPPORTED_PROXIES/, 'Не удалось подключиться через системный прокси. Проверьте настройки прокси Windows.'],
+      ['certificate', /ERR_CERT_|CERT_HAS_EXPIRED|UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_GET_ISSUER_CERT/, 'Не удалось проверить сертификат OpenAI. Проверьте дату Windows, доверенные сертификаты и настройки проверки HTTPS.'],
+      ['dns', /ERR_NAME_NOT_RESOLVED|ENOTFOUND|EAI_AGAIN/, 'Не удалось определить сетевой адрес OpenAI. Проверьте подключение и настройки DNS.'],
+      ['timeout', /TIMEOUT|TIMED_OUT|ETIMEDOUT|TimeoutError/, 'OpenAI не ответил вовремя. Проверьте сетевой доступ для игры и повторите вход.'],
+      ['cancelled', /AbortError|ABORT_ERR/, 'Запрос к OpenAI отменён. Начните вход заново.'],
+    ];
+    const category = categories.find(([, pattern]) => pattern.test(detail));
+    const code = category?.[0] || 'connection';
+    const message = category?.[2] || 'Игра не смогла связаться с OpenAI. Проверьте, что сетевой доступ разрешён для приложения, а не только для браузера.';
+    // Never retain/echo arbitrary transport text: it can contain request URLs,
+    // authorization headers or provider bodies. Only fixed, public reasons leave here.
+    super(`${message} [network:${code}]`);
+    this.code = code;
+  }
+}
 const nonce = () => randomBytes(32).toString('base64url');
 const decode = (part) => JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
 const hasPlan = (record) => record?.scopes?.includes('chatgpt.tokens.use.direct') && record.scopes.includes('resource.invoke');
@@ -19,7 +43,7 @@ const authUrl = (value) => {
   return url.href;
 };
 
-export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = fetch, now = Date.now, protection = desktopProtection }) {
+export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = desktopFetch || fetch, now = Date.now, protection = desktopProtection }) {
   const file = path.join(directory, 'chatgpt-plan.json');
   let store;
   if (fs.existsSync(file)) {
@@ -47,7 +71,11 @@ export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = fetch, n
     fs.chmodSync(tmp, 0o600);
     fs.renameSync(tmp, file);
   };
-  const get = async (url, options = {}) => fetchImpl(url, { ...options, redirect: 'error', signal: options.signal || AbortSignal.timeout(30000) });
+  const get = async (url, options = {}) => {
+    try {
+      return await fetchImpl(url, { ...options, credentials: 'omit', redirect: 'error', signal: options.signal || AbortSignal.timeout(30000) });
+    } catch (error) { throw new ChatGPTNetworkError(error); }
+  };
   const discovery = async () => {
     if (!metadata) {
       const r = await get(`${AUTH}/.well-known/openid-configuration`);

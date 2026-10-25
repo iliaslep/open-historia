@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { createChatGPTPlan } from './chatgptPlan.js';
+import { ChatGPTNetworkError, configureChatGPTTransport, createChatGPTPlan } from './chatgptPlan.js';
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'unit-key', use: 'sig', alg: 'RS256' };
@@ -17,10 +17,13 @@ const jwt = (body, alg = 'RS256') => {
 const fixture = (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'oh-siwc-unit-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  let time = Date.now(), authorization, refreshCount = 0, terminal = 'response.completed';
+  let time = Date.now(), authorization, refreshCount = 0, terminal = 'response.completed', networkError;
   const requests = [];
   const fetchImpl = async (url, options = {}) => {
     requests.push({ url, options });
+    if (networkError) throw networkError;
+    assert.equal(options.credentials, 'omit', 'OAuth and bearer requests must not borrow browser cookies');
+    assert.equal(options.redirect, 'error', 'credential requests must not follow redirects');
     if (url.endsWith('/.well-known/openid-configuration')) return Response.json({ issuer: 'https://auth.openai.com', jwks_uri: 'https://auth.openai.com/keys', revocation_endpoint: 'https://auth.openai.com/revoke' });
     if (url.endsWith('/keys')) return Response.json({ keys: [jwk] });
     if (url.endsWith('/oauth/token')) {
@@ -56,7 +59,7 @@ const fixture = (t) => {
   const manager = createChatGPTPlan(options);
   const begin = (id) => { authorization = new URL(manager.begin(id).url); return authorization; };
   const finish = (id = 'oaiapp_unit_1', code = 'valid') => manager.complete(new URLSearchParams({ state: authorization.searchParams.get('state'), code, client_id: id }));
-  return { directory, manager, options, begin, finish, requests, advance: () => { time += 3600000; }, refreshes: () => refreshCount, failStream: () => { terminal = 'response.failed'; } };
+  return { directory, manager, options, begin, finish, requests, advance: () => { time += 3600000; }, refreshes: () => refreshCount, failStream: () => { terminal = 'response.failed'; }, failNetwork: (error) => { networkError = error; } };
 };
 
 test('official PKCE registration validates signature/nonce and keeps credentials out of public status', async (t) => {
@@ -138,4 +141,46 @@ test('desktop protection seals the full store and requires the same OS protector
   for (const value of ['unit-access', 'unit-refresh', 'unit@example.test']) assert.equal(stored.includes(value), false);
   assert.equal(createChatGPTPlan({ ...f.options, protection }).status().connected, true);
   assert.throws(() => createChatGPTPlan(f.options));
+});
+
+test('a desktop uses its configured transport and never sends ambient browser credentials', async (t) => {
+  const f = fixture(t);
+  let called = 0;
+  configureChatGPTTransport(async (url, options) => {
+    called++;
+    assert.equal(url, 'https://auth.openai.com/api/accounts/oauth/token');
+    assert.equal(options.credentials, 'omit');
+    assert.equal(options.redirect, 'error');
+    throw new Error('net::ERR_PROXY_CONNECTION_FAILED');
+  });
+  t.after(() => configureChatGPTTransport(undefined));
+  const manager = createChatGPTPlan({ directory: f.directory, callbackUrl: f.options.callbackUrl });
+  const url = new URL(manager.begin().url);
+  await assert.rejects(() => manager.complete(new URLSearchParams({ state: url.searchParams.get('state'), code: 'unit-code', client_id: 'oaiapp_unit' })),
+    (error) => error instanceof ChatGPTNetworkError && error.code === 'proxy');
+  assert.equal(called, 1);
+  assert.match(manager.status().error, /системный прокси/);
+});
+
+test('network failures provide safe actionable reasons and a fresh login can recover', async (t) => {
+  const f = fixture(t);
+  for (const [reason, category] of [
+    ['ENOTFOUND', 'dns'], ['ERR_TUNNEL_CONNECTION_FAILED', 'proxy'],
+    ['SELF_SIGNED_CERT_IN_CHAIN', 'certificate'], ['UND_ERR_CONNECT_TIMEOUT', 'timeout'],
+    ['AbortError', 'cancelled'], ['ECONNRESET', 'connection'],
+  ]) {
+    f.begin();
+    f.failNetwork(new TypeError(`fetch failed: ${reason} sensitive-transport-body`, { cause: { code: reason } }));
+    await assert.rejects(() => f.finish(), (error) => error instanceof ChatGPTNetworkError && error.code === category);
+    assert.equal(f.manager.status().connected, false);
+    assert.equal(f.manager.status().error.includes('sensitive-transport-body'), false);
+    assert.match(f.manager.status().error, new RegExp(`network:${category}`));
+    const stored = JSON.parse(fs.readFileSync(path.join(f.directory, 'chatgpt-plan.json'), 'utf8'));
+    assert.deepEqual(stored.accounts, {});
+  }
+  f.failNetwork(null);
+  f.begin();
+  assert.equal(f.manager.status().error, '');
+  await f.finish();
+  assert.equal(f.manager.status().connected, true);
 });

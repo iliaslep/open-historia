@@ -1,5 +1,5 @@
 // Isolated Windows/local strategy shell. No upstream auto-updater or payload loader.
-const { app, BrowserWindow, dialog, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, dialog, shell, safeStorage, net } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -55,7 +55,8 @@ else {
     process.env.OH_HOST = '127.0.0.1';
     process.env.OH_VISIT_COUNT = '0';
     process.env.PORT = '0';
-    const { configureChatGPTProtection } = await import(pathToFileURL(path.join(root, 'server', 'chatgptPlan.js')).href);
+    const { configureChatGPTProtection, configureChatGPTTransport } = await import(pathToFileURL(path.join(root, 'server', 'chatgptPlan.js')).href);
+    configureChatGPTTransport((input, options) => net.fetch(input, options));
     configureChatGPTProtection({
       seal: (text) => {
         if (!safeStorage.isEncryptionAvailable()) throw new Error('Защищённое хранилище Windows недоступно.');

@@ -45,6 +45,7 @@ export default function ChatGPTPanel({ gameId, target }) {
   const login = (accountId) => run(async () => {
     const result = await request('start', accountId ? { accountId } : {});
     setLoginUrl(result.url);
+    setStatus(await request('status'));
     // The one-use PKCE URL contains no retained identity/access/refresh token.
     const link = document.createElement('a');
     link.href = result.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.click();
@@ -58,7 +59,7 @@ export default function ChatGPTPanel({ gameId, target }) {
     </select></label>}
     {!status?.canInfer && <p>ChatGPT не подключён. Игра и программные рекомендации продолжают работать без него.</p>}
     <button disabled={busy} onClick={() => login(status?.active)}>Continue with ChatGPT</button>
-    {loginUrl && !status?.canInfer && <a href={loginUrl} target="_blank" rel="noopener noreferrer">Открыть официальный вход в браузере</a>}
+    {loginUrl && !status?.canInfer && !status?.error && <a href={loginUrl} target="_blank" rel="noopener noreferrer">Открыть официальный вход в браузере</a>}
     {status?.accounts?.length > 0 && <button disabled={busy} onClick={() => login()}>Добавить другой аккаунт</button>}
     {status?.connected && <button disabled={busy} onClick={() => run(async () => { const result = await request('logout', {}); setMessage(result.message); setStatus(await request('status')); setModels([]); setReply(null); })}>Отключить ChatGPT</button>}
     {status?.canInfer && <><label>Модель<select value={model} disabled={busy} onChange={(e) => setModel(e.target.value)}>{models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
@@ -66,7 +67,7 @@ export default function ChatGPTPanel({ gameId, target }) {
       <button disabled={busy || !model || !prompt.trim()} onClick={() => run(async () => { setReply(null); setReply(await request('ask', { gameId, target, model, prompt })); })}>Отправить · расходует лимит ChatGPT</button>
       {busy && <button onClick={() => request('cancel', {}).catch((e) => setError(e.message))}>Остановить ответ</button>}
     </>}
-    {(message || status?.error) && <p role="status">{message || status.error}</p>}
+    {status?.error ? <p className="strategy-error" role="alert">{status.error}</p> : message && <p role="status">{message}</p>}
     {error && <p className="strategy-error" role="alert">{error}</p>}
     {reply && <article><p className="strategy-answer">{reply.text}</p><small>Токены: вход {reply.usage?.input_tokens ?? '—'}, выход {reply.usage?.output_tokens ?? '—'}. Рекомендации применяйте через игровые кнопки.</small></article>}
     <a href="https://developers.openai.com/siwc/token-sharing-open-source" target="_blank" rel="noreferrer">Официальные условия подключения</a>

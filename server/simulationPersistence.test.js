@@ -15,8 +15,11 @@ test('simulation checkpoints persist through the real API; invalid writes/import
   process.env.OH_ASSETS_DIR = path.join(root, 'downloaded-assets');
   fs.mkdirSync(process.env.OH_ASSETS_DIR);
   fs.writeFileSync(path.join(process.env.OH_ASSETS_DIR, 'cities-seed.json'), JSON.stringify({ downloadedSeed: true }));
+  const { configureChatGPTTransport } = await import('./chatgptPlan.js');
+  configureChatGPTTransport(async () => { throw new TypeError('fetch failed: sensitive-transport-body', { cause: { code: 'ENOTFOUND' } }); });
   const { httpServer } = await import('./server.js');
   t.after(async () => {
+    configureChatGPTTransport(undefined);
     await new Promise((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -39,6 +42,13 @@ test('simulation checkpoints persist through the real API; invalid writes/import
   const forgedCallback = await fetch(`${base}/auth/callback?state=forged&code=never-exchange&client_id=oaiapp_invalid`);
   assert.equal(forgedCallback.status, 400);
   assert.equal(forgedCallback.headers.get('referrer-policy'), 'no-referrer');
+  const state = new URL(login.data.url).searchParams.get('state');
+  const failedLogin = await fetch(`${base}/auth/callback?${new URLSearchParams({ state, code: 'sensitive-auth-code', client_id: 'oaiapp_fixture' })}`);
+  const failureText = await failedLogin.text();
+  assert.equal(failedLogin.status, 400);
+  assert.match(failureText, /network:dns/);
+  for (const secret of ['sensitive-auth-code', 'sensitive-transport-body', state]) assert.equal(failureText.includes(secret), false);
+  assert.match((await request('/api/strategy/chatgpt/status')).data.error, /network:dns/);
   assert.equal(created.status, 201);
   const gameId = created.data.game.id;
   const legacy = (await request('/api/runtime/json/world')).data;

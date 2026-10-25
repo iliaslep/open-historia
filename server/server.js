@@ -1,5 +1,5 @@
 import { ClockRequestError } from "./simulation/clockStore.js";
-import { createChatGPTPlan } from "./chatgptPlan.js";
+import { ChatGPTNetworkError, createChatGPTPlan } from "./chatgptPlan.js";
 /*! Open Historia — portions (CORS, AI relay, shutdown endpoint, hub proxy) © 2026 Nicholas Krol, AGPL-3.0-or-later (see LICENSE). */
 import crypto from "crypto";
 import express from "express";
@@ -712,7 +712,10 @@ app.get('/auth/callback', async (req, res) => {
   try {
     await plan().complete(new URLSearchParams(req.originalUrl.split('?')[1] || ''));
     res.redirect(303, '/?strategy=1&chatgpt=connected');
-  } catch { res.status(400).type('text/plain').send('Вход ChatGPT не завершён. Вернитесь в игру и повторите вход.'); }
+  } catch (error) {
+    const reason = error instanceof ChatGPTNetworkError ? `\n\n${error.message}` : '';
+    res.status(400).type('text/plain').send(`Вход ChatGPT не завершён.${reason}\n\nВернитесь в игру и начните новый вход. Не обновляйте эту страницу: код входа одноразовый.`);
+  }
 });
 app.post('/api/strategy/chatgpt/select', jsonParser, (req, res) => {
   try { res.json(plan().select(req.body?.accountId)); } catch (e) { sendError(res, 400, e); }

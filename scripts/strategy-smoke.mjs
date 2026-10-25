@@ -108,6 +108,27 @@ try {
   assert.equal(aiCalls, 0, 'native gameplay must never request an AI provider');
   await click('ChatGPT');
   await wait(`document.querySelector('.strategy-chatgpt')?.textContent.includes('ChatGPT не подключён')`);
+  // Reproduce the reported UI bug: after showing "finish in your browser", a
+  // subsequent transport error must replace that message, rather than be hidden.
+  // Only HTTP auth responses are stubbed; the rendered React panel is real.
+  await evaluate(`(() => {
+    window.__authProbe = { started: false, failed: false, fetch: window.fetch };
+    window.__authProbe.blockLink = e => { if (e.target.closest('a')?.href.startsWith('https://auth.openai.com/')) e.preventDefault(); };
+    document.addEventListener('click', window.__authProbe.blockLink, true);
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/api/strategy/chatgpt/start')) { window.__authProbe.started = true; return Promise.resolve(Response.json({url:'https://auth.openai.com/unit-test'})); }
+      if (url.endsWith('/api/strategy/chatgpt/status')) return Promise.resolve(Response.json({connected:false,canInfer:false,active:null,accounts:[],error:window.__authProbe.failed?'Не удалось подключиться через системный прокси. [network:proxy]':''}));
+      return window.__authProbe.fetch(input, init);
+    };
+  })()`);
+  await click('Continue with ChatGPT');
+  await wait(`document.querySelector('.strategy-chatgpt [role=status]')?.textContent.includes('Завершите вход')`);
+  await evaluate('window.__authProbe.failed = true');
+  await wait(`document.querySelector('.strategy-chatgpt [role=alert]')?.textContent.includes('network:proxy')`);
+  assert.equal(await evaluate(`document.querySelector('.strategy-chatgpt [role=status]')?.textContent.includes('Завершите вход')||false`), false);
+  await evaluate(`(() => {window.fetch = window.__authProbe.fetch; document.removeEventListener('click', window.__authProbe.blockLink, true); delete window.__authProbe;})()`);
+  await wait(`!document.querySelector('.strategy-chatgpt [role=alert]')`);
   // Reach war through actual resource-limited UI commands, then check the
   // feature-state that the live MapLibre political fill expression renders.
   const action = async (text) => {
@@ -148,7 +169,7 @@ try {
   await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const screenshot = await cdp('Page.captureScreenshot', { format: 'png' }, session);
   fs.writeFileSync('/tmp/strategy-smoke.png', Buffer.from(screenshot.data, 'base64'));
-  console.log('PASS (remote HTTPS blocked): create, investment, week, treaty, calendar month, NPCs, UI export/import, reload, ChatGPT fallback, intelligence, mobilization, sanctions, war, rendered territory color, sovereignty, peace; AI calls:', aiCalls);
+  console.log('PASS (remote HTTPS blocked): create, investment, week, treaty, calendar month, NPCs, UI export/import, reload, ChatGPT fallback/error visibility, intelligence, mobilization, sanctions, war, rendered territory color, sovereignty, peace; AI calls:', aiCalls);
   console.log('Screenshot: /tmp/strategy-smoke.png');
 } finally {
   if (browser.exitCode === null && browser.signalCode === null) {
