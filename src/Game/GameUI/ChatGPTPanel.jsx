@@ -1,12 +1,8 @@
 import { useEffect, useState } from 'react';
+import { strategyRequest } from '../../runtime/strategyRequest.js';
 
 async function request(action, body) {
-  const response = await fetch(`/api/strategy/chatgpt/${action}`, body === undefined ? { cache: 'no-store' } : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || 'ChatGPT сейчас недоступен.');
-  return data;
+  return strategyRequest(`/api/strategy/chatgpt/${action}`, body, { timeoutMs: action === 'ask' ? 200000 : 10000 });
 }
 
 export default function ChatGPTPanel({ gameId, target }) {

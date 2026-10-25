@@ -3,6 +3,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes, randomUUID, createHash, createPublicKey, verify } from 'node:crypto';
+import { ChatGPTNetworkError } from './chatgptErrors.js';
+export { ChatGPTNetworkError } from './chatgptErrors.js';
+import { consumeChatGPTResponse, readChatGPTJson } from './chatgptResponse.js';
 import { STRATEGY_CHAT_INSTRUCTIONS } from './simulation/conversations.js';
 
 const AUTH = 'https://auth.openai.com';
@@ -16,25 +19,6 @@ export function configureChatGPTProtection(protection) { desktopProtection = pro
 // settings. Keep the standalone Node and test transports independently injectable.
 export function configureChatGPTTransport(fetchImpl) { desktopFetch = fetchImpl; }
 
-export class ChatGPTNetworkError extends Error {
-  constructor(error) {
-    const detail = `${error?.cause?.code || ''} ${error?.code || ''} ${error?.name || ''} ${error?.message || ''}`;
-    const categories = [
-      ['proxy', /ERR_PROXY_CONNECTION_FAILED|ERR_TUNNEL_CONNECTION_FAILED|ERR_NO_SUPPORTED_PROXIES/, 'Не удалось подключиться через системный прокси. Проверьте настройки прокси Windows.'],
-      ['certificate', /ERR_CERT_|CERT_HAS_EXPIRED|UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_GET_ISSUER_CERT/, 'Не удалось проверить сертификат OpenAI. Проверьте дату Windows, доверенные сертификаты и настройки проверки HTTPS.'],
-      ['dns', /ERR_NAME_NOT_RESOLVED|ENOTFOUND|EAI_AGAIN/, 'Не удалось определить сетевой адрес OpenAI. Проверьте подключение и настройки DNS.'],
-      ['timeout', /TIMEOUT|TIMED_OUT|ETIMEDOUT|TimeoutError/, 'OpenAI не ответил вовремя. Проверьте сетевой доступ для игры и повторите вход.'],
-      ['cancelled', /AbortError|ABORT_ERR/, 'Запрос к OpenAI отменён. Начните вход заново.'],
-    ];
-    const category = categories.find(([, pattern]) => pattern.test(detail));
-    const code = category?.[0] || 'connection';
-    const message = category?.[2] || 'Игра не смогла связаться с OpenAI. Проверьте, что сетевой доступ разрешён для приложения, а не только для браузера.';
-    // Never retain/echo arbitrary transport text: it can contain request URLs,
-    // authorization headers or provider bodies. Only fixed, public reasons leave here.
-    super(`${message} [network:${code}]`);
-    this.code = code;
-  }
-}
 const nonce = () => randomBytes(32).toString('base64url');
 const decode = (part) => JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
 const hasPlan = (record) => record?.scopes?.includes('chatgpt.tokens.use.direct') && record.scopes.includes('resource.invoke');
@@ -75,13 +59,13 @@ export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = desktopF
   const get = async (url, options = {}) => {
     try {
       return await fetchImpl(url, { ...options, credentials: 'omit', redirect: 'error', signal: options.signal || AbortSignal.timeout(30000) });
-    } catch (error) { throw new ChatGPTNetworkError(error); }
+    } catch (error) { throw new ChatGPTNetworkError(error, url.endsWith('/responses') ? 'response-start' : url.endsWith('/models') ? 'models' : url.endsWith('/token') ? 'token' : 'identity'); }
   };
   const discovery = async () => {
     if (!metadata) {
       const r = await get(`${AUTH}/.well-known/openid-configuration`);
       if (!r.ok) throw new Error(`Не удалось получить конфигурацию OpenAI (${r.status}).`);
-      const value = await r.json();
+      const value = await readChatGPTJson(r, 'identity');
       if (value.issuer !== AUTH) throw new Error('OpenAI issuer mismatch.');
       authUrl(value.jwks_uri);
       if (value.revocation_endpoint) authUrl(value.revocation_endpoint);
@@ -99,7 +83,7 @@ export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = desktopF
     const md = await discovery();
     const keysResponse = await get(md.jwks_uri);
     if (!keysResponse.ok) throw new Error('OpenAI signing keys unavailable.');
-    const keys = await keysResponse.json();
+    const keys = await readChatGPTJson(keysResponse, 'identity');
     const key = keys.keys?.find((candidate) => candidate.kid === header.kid && candidate.kty === 'RSA' && (!candidate.use || candidate.use === 'sig') && (!candidate.alg || candidate.alg === 'RS256'));
     if (!key || !verify('RSA-SHA256', Buffer.from(`${encodedHeader}.${encodedBody}`), createPublicKey({ key, format: 'jwk' }), Buffer.from(signature, 'base64url'))) throw new Error('Invalid OpenAI ID token signature.');
     const audience = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
@@ -113,7 +97,7 @@ export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = desktopF
     const response = await get(`${AUTH}/api/accounts/oauth/token`, { method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ ...parameters, resource: RESOURCE }) });
     if (!response.ok) throw new Error(`Авторизация OpenAI не завершена (${response.status}). Повторите вход.`);
-    return response.json();
+    return readChatGPTJson(response, 'token');
   };
   const credentials = (response, previous = {}) => {
     if (typeof response.access_token !== 'string' || !response.access_token || response.token_type?.toLowerCase() !== 'bearer'
@@ -214,7 +198,7 @@ export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = desktopF
       const account = await token();
       const response = await get(`${RESOURCE}/models`, { headers: { Authorization: `Bearer ${account.access_token}` } });
       if (!response.ok) throw new Error(`Список моделей недоступен (${response.status}).`);
-      const data = await response.json();
+      const data = await readChatGPTJson(response, 'models');
       if (!Array.isArray(data.models)) throw new Error('Неизвестный формат каталога моделей ChatGPT.');
       return data.models.filter((m) => m.visibility === 'list' && typeof m.slug === 'string').map((m) => ({ id: m.slug, name: m.display_name || m.slug }));
     },
@@ -229,32 +213,15 @@ export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = desktopF
       const controller = new AbortController();
       requests.set(controller, account.client_id);
       try {
-        const response = await get(`${RESOURCE}/responses`, { method: 'POST', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(120000)]),
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(120000)]);
+        const response = await get(`${RESOURCE}/responses`, { method: 'POST', signal,
           headers: { Authorization: `Bearer ${account.access_token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model, store: false, stream: true,
             instructions: purpose === 'strategy' ? STRATEGY_CHAT_INSTRUCTIONS : 'Ты советник в геополитической игре. Отвечай на русском, кратко (до 600 слов). История после стартовой даты альтернативна. Игровые оценки не выдавай за исторические факты. Не утверждай, что изменил состояние игры. Рекомендации исполняются только через проверяемые игровые команды.',
             input: [{ role: 'user', content: `${context}\n\nВопрос: ${prompt}` }] }) });
         if (!response.ok) throw new Error(`Запрос ChatGPT отклонён (${response.status}). Партия продолжает работать автономно.`);
-        let buffer = '', text = '', completed = false, usage = null;
-        const decoder = new TextDecoder();
-        for await (const chunk of response.body) {
-          buffer += decoder.decode(chunk, { stream: true });
-          buffer = buffer.replace(/\r\n/g, '\n');
-          let end;
-          while ((end = buffer.indexOf('\n\n')) >= 0) {
-            const block = buffer.slice(0, end); buffer = buffer.slice(end + 2);
-            const data = block.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
-            if (!data || data === '[DONE]') continue;
-            const event = JSON.parse(data);
-            if (event.type === 'response.output_text.delta') text += event.delta || '';
-            if (['error', 'response.failed', 'response.incomplete'].includes(event.type)) throw new Error('ChatGPT не завершил ответ: лимит, отказ или прерывание. Мир игры не изменён.');
-            if (event.type === 'response.completed') { completed = true; usage = event.response?.usage || null; }
-            if (text.length > 30000) { controller.abort(); throw new Error('Ответ превысил допустимый размер.'); }
-          }
-        }
-        if (!completed || !text) throw new Error('Поток ChatGPT прерван до завершения. Мир игры не изменён.');
-        return { text, usage };
-      } finally { requests.delete(controller); }
+        return await consumeChatGPTResponse(response, { signal });
+      } finally { controller.abort(); requests.delete(controller); }
     },
   };
 }

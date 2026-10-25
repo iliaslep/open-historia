@@ -17,7 +17,7 @@ const jwt = (body, alg = 'RS256') => {
 const fixture = (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'oh-siwc-unit-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  let time = Date.now(), authorization, refreshCount = 0, terminal = 'response.completed', networkError;
+  let time = Date.now(), authorization, refreshCount = 0, terminal = 'response.completed', networkError, streamTail = 'close', streamPulls = 0;
   const requests = [];
   const fetchImpl = async (url, options = {}) => {
     requests.push({ url, options });
@@ -50,7 +50,8 @@ const fixture = (t) => {
       assert.ok(body.instructions.includes('русском'));
       const data = `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'Совет: проверьте бюджет.' })}\n\ndata: ${JSON.stringify({ type: terminal, response: { usage: { input_tokens: 10, output_tokens: 5 } } })}\n\n`;
       const encoded = new TextEncoder().encode(data);
-      return new Response(new ReadableStream({ start(controller) { controller.enqueue(encoded.slice(0, 13)); controller.enqueue(encoded.slice(13)); controller.close(); } }));
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(encoded.slice(0, 13)); controller.enqueue(encoded.slice(13)); if (streamTail === 'close') controller.close(); },
+        pull(controller) { streamPulls++; if (streamTail === 'error') controller.error(new TypeError('Failed to fetch')); } }));
     }
     if (url.endsWith('/revoke')) return new Response(null, { status: 200 });
     throw new Error('Unexpected destination');
@@ -59,7 +60,8 @@ const fixture = (t) => {
   const manager = createChatGPTPlan(options);
   const begin = (id) => { authorization = new URL(manager.begin(id).url); return authorization; };
   const finish = (id = 'oaiapp_unit_1', code = 'valid') => manager.complete(new URLSearchParams({ state: authorization.searchParams.get('state'), code, client_id: id }));
-  return { directory, manager, options, begin, finish, requests, advance: () => { time += 3600000; }, refreshes: () => refreshCount, failStream: () => { terminal = 'response.failed'; }, failNetwork: (error) => { networkError = error; } };
+  return { directory, manager, options, begin, finish, requests, advance: () => { time += 3600000; }, refreshes: () => refreshCount, failStream: () => { terminal = 'response.failed'; }, failNetwork: (error) => { networkError = error; },
+    tail: value => { streamTail = value; }, pulls: () => streamPulls };
 };
 
 test('official PKCE registration validates signature/nonce and keeps credentials out of public status', async (t) => {
@@ -115,6 +117,19 @@ test('inference follows the restricted Responses contract and only accepts compl
   f.failStream();
   await assert.rejects(() => f.manager.ask({ model: 'allowed-model', prompt: 'Совет', context: 'Сводка' }));
   await assert.rejects(() => f.manager.ask({ model: 'invented-model', prompt: 'Совет', context: 'Сводка' }));
+});
+
+test('a completed response succeeds without waiting for the proxy to close its stream', { timeout: 3000 }, async t => {
+  const f = fixture(t); f.begin(); await f.finish(); f.tail('hold');
+  const result = await Promise.race([f.manager.ask({ model: 'allowed-model', prompt: 'Совет', context: 'Сводка' }),
+    new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('Waited past response.completed')), 600); timer.unref(); })]);
+  assert.match(result.text, /бюджет/);
+});
+
+test('transport failure after the terminal event cannot discard a valid completed answer', async t => {
+  const f = fixture(t); f.begin(); await f.finish(); f.tail('error');
+  const result = await f.manager.ask({ model: 'allowed-model', prompt: 'Совет', context: 'Сводка' });
+  assert.match(result.text, /бюджет/);
 });
 
 test('desktop protection seals the full store and requires the same OS protector on restart', async (t) => {

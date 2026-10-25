@@ -5,17 +5,12 @@ import { saveTextToDisk } from '../../runtime/saveFile.js';
 import { acceptFor } from '../../runtime/fileAccept.js';
 import ChatGPTPanel from './ChatGPTPanel.jsx';
 import StrategyChatPanel from './StrategyChatPanel.jsx';
+import { strategyRequest as api } from '../../runtime/strategyRequest.js';
 import './strategy.css';
 
 const money = (value) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(value);
 const labels = { Germany: 'Германия', France: 'Франция', 'United Kingdom': 'Великобритания', 'United States': 'США', China: 'Китай', Russia: 'Россия', Italy: 'Италия', Japan: 'Япония', India: 'Индия', Spain: 'Испания' };
 const label = (name) => labels[name] || name;
-async function api(path, body) {
-  const response = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || `Ошибка ${response.status}`);
-  return result;
-}
 
 export default function StrategyPanel() {
   const { activeGameId, activeGame, games, scenarios, loaded } = useLibraryState();
@@ -35,7 +30,7 @@ export default function StrategyPanel() {
   const refresh = async () => {
     if (!activeGameId) { setData(null); return; }
     const details = await api(`/api/games/${encodeURIComponent(activeGameId)}`);
-    setData(details.data);
+    setData(current => current?.world?.simulation?.revision > details.data.world?.simulation?.revision ? current : details.data);
   };
   useEffect(() => {
     let valid = true;

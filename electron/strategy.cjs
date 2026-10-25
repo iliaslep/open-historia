@@ -1,5 +1,6 @@
 // Isolated Windows/local strategy shell. No upstream auto-updater or payload loader.
-const { app, BrowserWindow, dialog, shell, safeStorage, net } = require('electron');
+const { app, BrowserWindow, dialog, shell, safeStorage, session } = require('electron');
+const { createStrategyNetwork } = require('./strategyNetwork.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -22,6 +23,7 @@ else {
   app.whenReady().then(async () => {
     app.setAppUserModelId('io.openhistoria.strategy.local');
     fs.mkdirSync(dataRoot, { recursive: true });
+    const strategyNetwork = await createStrategyNetwork(session);
     window = new BrowserWindow({ width: 1440, height: 960, minWidth: 800, minHeight: 600, title: 'Open Historia Strategy',
       backgroundColor: '#111c29', autoHideMenuBar: true,
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false } });
@@ -56,7 +58,7 @@ else {
     process.env.OH_VISIT_COUNT = '0';
     process.env.PORT = '0';
     const { configureChatGPTProtection, configureChatGPTTransport } = await import(pathToFileURL(path.join(root, 'server', 'chatgptPlan.js')).href);
-    configureChatGPTTransport((input, options) => net.fetch(input, options));
+    configureChatGPTTransport(strategyNetwork.fetch);
     configureChatGPTProtection({
       seal: (text) => {
         if (!safeStorage.isEncryptionAvailable()) throw new Error('Защищённое хранилище Windows недоступно.');

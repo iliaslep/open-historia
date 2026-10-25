@@ -107,6 +107,21 @@ try {
     await wait(`document.querySelector('.strategy-conversation [role=alert]')?.textContent.includes('неподдерживаемое')`);
     const bad = await saved();
     assert.deepEqual(bad.data.world.strategy, applied.data.world.strategy);
+    // Reproduce a failed local POST followed by a refresh that never resolves.
+    // Busy controls must be released without waiting for that recovery read.
+    await evaluate(`(() => {
+      window.__failedLocalFetch = window.fetch;
+      const id = document.querySelector('.strategy').dataset.gameId;
+      window.fetch = (input, options) => {
+        if (input === '/api/strategy/chatgpt/chat') return Promise.reject(new TypeError('Failed to fetch'));
+        if (input === '/api/games/' + encodeURIComponent(id)) return new Promise(() => {});
+        return window.__failedLocalFetch(input, options);
+      };
+    })()`);
+    await write('Сбой локального соединения');
+    await wait(`document.querySelector('.strategy-conversation [role=alert]')?.textContent.includes('local:request')`);
+    await wait(`!Array.from(document.querySelectorAll('.strategy-clock button')).some(b=>b.disabled)`);
+    await evaluate('window.fetch = window.__failedLocalFetch; delete window.__failedLocalFetch');
     await write('Обсудим дальнейшие решения');
     await wait(`document.querySelector('.strategy-transcript')?.textContent.includes('Уточним дальнейшие')`);
     const progressed = await saved();

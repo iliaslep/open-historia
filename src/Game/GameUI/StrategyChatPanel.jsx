@@ -1,12 +1,6 @@
 import { useEffect, useState } from 'react';
 import { conversationId, nativeThreads } from '../../../server/simulation/conversations.js';
-
-async function request(url, body) {
-  const r = await fetch(url, body === undefined ? { cache: 'no-store' } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || 'Не удалось обработать сообщение.');
-  return data;
-}
+import { strategyRequest as request } from '../../runtime/strategyRequest.js';
 
 export default function StrategyChatPanel({ gameId, channel, target = '', chats, revision, label, busy, onBusy, onResult, onApply, onRefresh, onSettings }) {
   const [status, setStatus] = useState(null);
@@ -35,9 +29,9 @@ export default function StrategyChatPanel({ gameId, channel, target = '', chats,
     if (busy || sending || !prompt.trim()) return;
     setSending(true); onBusy(true); setError('');
     try {
-      const result = await request('/api/strategy/chatgpt/chat', { gameId, channel, target, model, prompt, expectedRevision: revision });
+      const result = await request('/api/strategy/chatgpt/chat', { gameId, channel, target, model, prompt, expectedRevision: revision }, { timeoutMs: 200000 });
       await onResult(result); setPrompt(''); setUsage(result.usage);
-    } catch (failure) { setError(failure.message); await onRefresh().catch(() => {}); }
+    } catch (failure) { setError(failure.message); void onRefresh().catch(() => {}); }
     finally { setSending(false); onBusy(false); }
   };
   const locked = busy || sending;
