@@ -1,0 +1,60 @@
+name: Strategy Windows download
+
+on:
+  push:
+    branches:
+      - release/strategy-delivery
+
+permissions:
+  contents: write
+
+concurrency:
+  group: strategy-v0.1.0-release
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Build the exact reviewed game version, not the delivery branch's tip.
+      - uses: actions/checkout@v5
+        with:
+          ref: strategy-v0.1.0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Build Windows game
+        run: npm run build:strategy:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Package game and corresponding source
+        run: |
+          node scripts/package-strategy.mjs
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import {createHash} from 'node:crypto';
+          const names = ['Open-Historia-Strategy-0.1.0-Windows-x64.zip', 'Open-Historia-Strategy-0.1.0-Source.zip'];
+          const lines = names.map(name => `${createHash('sha256').update(fs.readFileSync(`release/${name}`)).digest('hex')}  ${name}`);
+          fs.writeFileSync('release/SHA256SUMS.txt', lines.join('\n') + '\n');
+          JS
+
+      - name: Attach files and publish the authorized prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release upload strategy-v0.1.0 release/Open-Historia-Strategy-0.1.0-Windows-x64.zip release/Open-Historia-Strategy-0.1.0-Source.zip release/SHA256SUMS.txt PLAY_WINDOWS_RU.md --clobber
+          gh release edit strategy-v0.1.0 --draft=false --prerelease --latest=false
