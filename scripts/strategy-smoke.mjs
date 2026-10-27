@@ -239,7 +239,11 @@ try {
         await cdp('Emulation.setDeviceMetricsOverride',{...viewport,deviceScaleFactor:1,mobile:viewport.width<600},session);
         await wait(`(()=>{const t=document.querySelector('.strategy-conversation textarea').getBoundingClientRect();const b=document.querySelector('.strategy-conversation button[type=submit]').getBoundingClientRect();return t.top>=0&&b.bottom<innerHeight&&b.right<=innerWidth;})()`);
       }
+      await cdp('Emulation.setDeviceMetricsOverride',{width:800,height:600,deviceScaleFactor:1,mobile:false},session);
+      await evaluate(`document.querySelector('.strategy-conversation textarea').scrollIntoView({block:'center'})`);
+      await wait(`(()=>{const t=document.querySelector('.strategy-conversation textarea').getBoundingClientRect();const b=document.querySelector('.strategy-conversation button[type=submit]').getBoundingClientRect();return t.top>=0&&b.bottom<innerHeight;})()`);
       await cdp('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false},session);
+      await evaluate(`document.querySelector('.strategy').scrollTop=0`);
       await click('Население');
       const shot = await cdp('Page.captureScreenshot',{format:'png'},session);
       fs.writeFileSync('/tmp/strategy-society-smoke.png',Buffer.from(shot.data,'base64'));
