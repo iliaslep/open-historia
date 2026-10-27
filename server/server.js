@@ -1,3 +1,4 @@
+import { createStrategyAdvance } from './strategyAdvance.js';
 import { ClockRequestError } from "./simulation/clockStore.js";
 import { ChatGPTNetworkError, createChatGPTPlan } from "./chatgptPlan.js";
 import { createStrategyChat } from './strategyChat.js';
@@ -728,6 +729,11 @@ app.post('/api/strategy/chatgpt/cancel', (_req, res) => { res.json(plan().cancel
 app.get('/api/strategy/chatgpt/models', async (_req, res) => {
   res.set('Cache-Control', 'no-store');
   try { res.json({ models: await plan().models() }); } catch (e) { sendError(res, 400, e); }
+});
+const strategyAdvance = createStrategyAdvance({readGame:getGameDetails,commit:advanceGameClock,ask:input=>plan().ask(input)});
+app.post('/api/strategy/chatgpt/advance', jsonParser, async (req,res)=>{
+  try {res.json(await strategyAdvance(req.body));}
+  catch(error) {sendError(res,error instanceof ClockRequestError?error.status:400,error);}
 });
 const strategyChat = createStrategyChat({ readGame: getGameDetails, commit: advanceGameClock, ask: input => plan().ask(input) });
 app.post('/api/strategy/chatgpt/chat', jsonParser, async (req, res) => {

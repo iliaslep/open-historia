@@ -4,12 +4,13 @@
 import { addGameDays, diffGameDays, normalizeGameDate } from '../gameDates.js';
 import { drawRandom } from './random.js';
 import { buildStrategyGeography } from './geography.js';
+import { validateStory, startInitiative, resolveInitiatives, publishDailyNews } from './story.js';
 import { createMigration, validateMigration, migrationDecision, advanceMigration } from './migration.js';
 import { createIntelligence, validateIntelligence, intelligenceDecision, advanceIntelligence, intelligenceNPC } from './intelligence.js';
 
 /** @typedef {{gdp:number, treasury:number, debt:number, tax:number, spending:number, stability:number, readiness:number, industry:number, energy:number, unemployment:number, capital:number, relations:Record<string,number>}} Country */
 /** @typedef {{owner:string, kind:'tax'|'spending'|'industry'|'mobilize', value?:number, due:string}} Project */
-/** @typedef {{version:1, dataKind:'game-estimate', player:string, countries:Record<string,Country>, regions?:Record<string,import('./geography.js').Region>, migration?:import('./migration.js').Migration, spycraft?:import('./intelligence.js').Intelligence, contacts?:Array<{target:string,date:string}>, history:Array<{date:string,text:string,country:string}>, projects:Project[], treaties:Array<{a:string,b:string,until:string}>, reports:Array<{date:string,target:string,confidence:number,text:string}>, intel:Array<{owner:string,target:string,due:string}>, wars:Array<{a:string,b:string,since:string}>}} Strategy */
+/** @typedef {{version:1, dataKind:'game-estimate', player:string, countries:Record<string,Country>, regions?:Record<string,import('./geography.js').Region>, story?:import('./story.js').Story, migration?:import('./migration.js').Migration, spycraft?:import('./intelligence.js').Intelligence, contacts?:Array<{target:string,date:string}>, history:Array<{date:string,text:string,country:string}>, projects:Project[], treaties:Array<{a:string,b:string,until:string}>, reports:Array<{date:string,target:string,confidence:number,text:string}>, intel:Array<{owner:string,target:string,due:string}>, wars:Array<{a:string,b:string,since:string}>}} Strategy */
 /** @param {number} x @param {number} low @param {number} high */
 const clamp = (x, low, high) => Math.max(low, Math.min(high, x));
 /** @template T @param {T} value @returns {T} */
@@ -68,6 +69,7 @@ export function validateStrategy(input, at = '') {
       || region.neighbors.some((other) => other === id || !Object.hasOwn(regions, other)
         || !Array.isArray(regions[other].neighbors) || !regions[other].neighbors.includes(id))) throw new Error('Повреждена география стратегии.');
   }
+  if (raw.story !== undefined) validateStory(raw.story,raw,at);
   if (raw.migration !== undefined) validateMigration(raw.migration, raw, at);
   if (raw.spycraft !== undefined) validateIntelligence(raw.spycraft, raw, at);
   return copy(raw);
@@ -125,7 +127,9 @@ export function strategyDecision(raw, request, date) {
     if (!Object.hasOwn(s.countries, target) || target === s.player) throw new Error('Выберите другое государство.');
     return s.countries[target];
   };
-  if (typeof type === 'string' && type.startsWith('migration_')) {
+  if (type === 'initiative') {
+    note(s,date,startInitiative(s,request,date,spend));
+  } else if (typeof type === 'string' && type.startsWith('migration_')) {
     note(s,date,migrationDecision(s,type,value,date,spend));
   } else if (typeof type === 'string' && type.startsWith('spy_')) {
     note(s,date,intelligenceDecision(s,type,target,value,date,spend));
@@ -290,6 +294,8 @@ export function advanceStrategy(raw, from, to, rng) {
       if (s.countries[w.a].readiness > 10 && s.countries[w.b].readiness > 10) return true;
       note(s, date, `${w.a} и ${w.b} согласовали прекращение огня из-за истощения сил.`); return false;
     });
+    resolveInitiatives(s,date,roll,reportNote);
+    publishDailyNews(s,date);
   }
   return { strategy: validateStrategy(s, to), rng: random };
 }

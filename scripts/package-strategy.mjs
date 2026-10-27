@@ -17,7 +17,7 @@ for (const file of tracked) {
 }
 const options = { type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } };
 const sourceBytes = await source.generateAsync(options);
-await fs.writeFile(path.join(output, 'Open-Historia-Strategy-0.3.0-Source.zip'), sourceBytes);
+await fs.writeFile(path.join(output, 'Open-Historia-Strategy-0.4.0-Source.zip'), sourceBytes);
 const bundle = new JSZip();
 async function addFolder(directory, prefix) {
   for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
@@ -32,6 +32,7 @@ bundle.file('Source.zip', sourceBytes);
 bundle.file('PLAY_WINDOWS_RU.md', await fs.readFile('PLAY_WINDOWS_RU.md'));
 bundle.file('LICENSE', await fs.readFile('LICENSE'));
 bundle.file('MIGRATION_AND_INTELLIGENCE.md', await fs.readFile('MIGRATION_AND_INTELLIGENCE.md'));
-const destination = path.join(output, 'Open-Historia-Strategy-0.3.0-Windows-x64.zip');
+bundle.file('FREE_SIMULATION_NEWS.md', await fs.readFile('FREE_SIMULATION_NEWS.md'));
+const destination = path.join(output, 'Open-Historia-Strategy-0.4.0-Windows-x64.zip');
 await fs.writeFile(destination, await bundle.generateAsync(options));
 console.log(destination);

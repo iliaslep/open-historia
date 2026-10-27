@@ -1,3 +1,4 @@
+import { NEWSPAPER_INSTRUCTIONS } from './simulation/newspaper.js';
 // Official SIWC OSS flow, documented at developers.openai.com/siwc/token-sharing-open-source.
 // Credentials stay on the local machine and never become game assets or browser storage.
 import fs from 'node:fs';
@@ -203,8 +204,8 @@ export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = desktopF
       return data.models.filter((m) => m.visibility === 'list' && typeof m.slug === 'string').map((m) => ({ id: m.slug, name: m.display_name || m.slug }));
     },
     async ask({ model, prompt, context, purpose = 'advisor' }) {
-      if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 3000 || typeof context !== 'string' || context.length > 20000) throw new Error('Слишком большой или пустой запрос.');
-      if (!['advisor', 'strategy'].includes(purpose)) throw new Error('Неизвестный формат запроса.');
+      if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 3000 || typeof context !== 'string' || context.length > (purpose === 'simulation' ? 65000 : 20000)) throw new Error('Слишком большой или пустой запрос.');
+      if (!['advisor', 'strategy','simulation'].includes(purpose)) throw new Error('Неизвестный формат запроса.');
       const selectedId = store.active;
       const available = await this.models();
       if (!available.some((item) => item.id === model)) throw new Error('Выберите модель из каталога своего аккаунта.');
@@ -217,7 +218,7 @@ export function createChatGPTPlan({ directory, callbackUrl, fetchImpl = desktopF
         const response = await get(`${RESOURCE}/responses`, { method: 'POST', signal,
           headers: { Authorization: `Bearer ${account.access_token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model, store: false, stream: true,
-            instructions: purpose === 'strategy' ? STRATEGY_CHAT_INSTRUCTIONS : 'Ты советник в геополитической игре. Отвечай на русском, кратко (до 600 слов). История после стартовой даты альтернативна. Игровые оценки не выдавай за исторические факты. Не утверждай, что изменил состояние игры. Рекомендации исполняются только через проверяемые игровые команды.',
+            instructions: purpose === 'simulation' ? NEWSPAPER_INSTRUCTIONS : purpose === 'strategy' ? STRATEGY_CHAT_INSTRUCTIONS : 'Ты советник в геополитической игре. Отвечай на русском, кратко (до 600 слов). История после стартовой даты альтернативна. Игровые оценки не выдавай за исторические факты. Не утверждай, что изменил состояние игры. Рекомендации исполняются только через проверяемые игровые команды.',
             input: [{ role: 'user', content: `${context}\n\nВопрос: ${prompt}` }] }) });
         if (!response.ok) throw new Error(`Запрос ChatGPT отклонён (${response.status}). Партия продолжает работать автономно.`);
         return await consumeChatGPTResponse(response, { signal });

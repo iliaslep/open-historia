@@ -7,8 +7,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+const storyMode=process.argv.includes('--story');
 const systemsMode = process.argv.includes('--systems');
-const chatMode = process.argv.includes('--chats') || systemsMode;
+const chatMode = process.argv.includes('--chats') || systemsMode || storyMode;
 const chatFixture = chatMode || process.argv.includes('--offline-fixture') ? await (await import('./strategy-chat-fixture.mjs')).startChatFixture({authenticated:chatMode}) : null;
 const pageUrl = new URL(chatFixture ? `${chatFixture.origin}/?strategy=1` : process.argv[2] || 'http://127.0.0.1:5173/?strategy=1');
 pageUrl.searchParams.set('mapFillProbe', '1');
@@ -55,6 +56,7 @@ const wait = async (expression) => {
   throw new Error(`UI readiness failed: ${expression}\n${await evaluate('document.body.innerText')}`);
 };
 const click = async (text) => {
+  await evaluate(`document.querySelector('.strategy-newspaper [aria-label="Закрыть газету"]')?.click()`);
   await wait(`(()=>{const b=Array.from(document.querySelectorAll('.strategy button')).find(b=>b.textContent.startsWith(${JSON.stringify(text)}));if(!b||b.disabled)return false;b.click();return true;})()`);
 };
 const saved = () => evaluate(`(async()=>{const c=await(await fetch('/api/games')).json();const d=await(await fetch('/api/games/'+encodeURIComponent(c.activeGameId))).json();return {id:c.activeGameId,...d};})()`);
@@ -141,6 +143,62 @@ try {
     await click('Дипломатия');
     await wait(`document.querySelector('.strategy-transcript')?.textContent.includes('Французская делегация')`);
     await wait(`window.__OH_MAP_READINESS__?.polities && !window.__OH_MAP_READINESS__.polities.failed && window.__OH_MAP_READINESS__.idleAt>=window.__OH_MAP_READINESS__.polities.at`);
+    if(storyMode) {
+      await click('Чат решений');
+      await write('Создать космическое агентство и подготовить первую программу исследований');
+      await wait(`Array.from(document.querySelectorAll('.strategy-proposal')).some(p=>p.textContent.includes('Космическое агентство'))`);
+      const before=(await saved()).data.world.strategy;
+      await evaluate(`Array.from(document.querySelectorAll('.strategy-proposal button')).at(-1).click()`);
+      await wait(`!document.querySelector('.strategy-clock button').disabled`);
+      const planned=(await saved()).data.world.strategy;
+      assert.equal(planned.countries.Germany.treasury,before.countries.Germany.treasury-1000);
+      assert.equal(planned.story.initiatives.at(-1).status,'active');
+      await click('Замыслы');
+      await wait(`document.querySelector('.strategy-content')?.textContent.includes('Космическое агентство')`);
+      await click('▶ 7 дней');
+      await wait(`document.querySelector('.strategy-newspaper')`);
+      await wait(`document.querySelector('.strategy-newspaper').textContent.includes('Научное агентство подвело итоги')`);
+      const after=await saved();
+      assert.notEqual(after.data.world.strategy.story.initiatives.at(-1).status,'active');
+      assert.ok(after.data.world.strategy.story.facts.some(f=>f.title==='Космическое агентство'));
+      assert.equal(after.data.game.gameDate,'2016-12-22');
+      await evaluate(`Array.from(document.querySelectorAll('.strategy-newspaper h2 button')).find(b=>b.textContent.includes('Научное агентство')).click()`);
+      await wait(`document.querySelector('.strategy-paper-full aside')?.textContent.includes('Последствия')`);
+      const shot=await cdp('Page.captureScreenshot',{format:'png'},session);
+      fs.writeFileSync('/tmp/strategy-newspaper-smoke.png',Buffer.from(shot.data,'base64'));
+      // Escape closes the newspaper and restores the actual game, not a replay.
+      await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'},session);
+      await wait(`!document.querySelector('.strategy-newspaper')`);
+      await click('Экспорт партии');
+      const exported=path.join(downloads,'strategy-2016-12-22.json');
+      for(let i=0;i<100&&!fs.existsSync(exported);i++)await new Promise(resolve=>setTimeout(resolve,100));
+      assert.ok(fs.existsSync(exported));
+      const doc=await cdp('DOM.getDocument',{},session),file=await cdp('DOM.querySelector',{nodeId:doc.root.nodeId,selector:'.strategy input[type=file]'},session);
+      await cdp('DOM.setFileInputFiles',{nodeId:file.nodeId,files:[exported]},session);
+      await wait(`document.querySelector('.strategy').dataset.gameId!==${JSON.stringify(after.id)}`);
+      assert.deepEqual((await saved()).data.world.strategy,after.data.world.strategy);
+      await click('Газета');await click('Открыть газетный архив');
+      await wait(`document.querySelector('.strategy-newspaper')?.textContent.includes('Научное агентство')`);
+      await cdp('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true},session);
+      await wait(`document.querySelector('.strategy-newspaper').getBoundingClientRect().right<=innerWidth`);
+      await evaluate(`document.querySelector('.strategy-newspaper [aria-label="Закрыть газету"]').click()`);
+      await cdp('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false},session);
+      // Simulated provider failure: no time is lost; a deliberate offline move
+      // can still produce its own engine newspaper.
+      await evaluate(`(()=>{window.__turnFetch=window.fetch;window.fetch=(u,o)=>u==='/api/strategy/chatgpt/advance'?Promise.resolve(new Response(JSON.stringify({error:'Синтетический отказ ИИ'}),{status:400,headers:{'Content-Type':'application/json'}})):window.__turnFetch(u,o);})()`);
+      const failedBefore=await saved();await click('▶ 1 день');
+      await wait(`document.querySelector('.strategy [role=alert]')?.textContent.includes('Синтетический')`);
+      assert.equal((await saved()).data.game.gameDate,failedBefore.data.game.gameDate);
+      await evaluate(`window.fetch=window.__turnFetch;delete window.__turnFetch;`);
+      await click('Выполнить этот ход без ИИ');
+      await wait(`document.querySelector('.strategy-newspaper')`);
+      assert.equal((await saved()).data.game.gameDate,'2016-12-23');
+      await evaluate(`document.querySelector('.strategy-newspaper [aria-label="Закрыть газету"]').click()`);
+      await click('Чат решений');await write('Хочу учредить межпланетную академию');
+      await wait(`document.querySelector('.strategy-transcript')?.textContent.includes('Замысел можно включить в симуляцию')`);
+      assert.equal(await evaluate(`Array.from(document.querySelectorAll('.strategy-proposal')).at(-1).textContent.includes('поддержка: 3')`),true);
+      console.log('PASS story: free-text space agency, resource debit, persisted initiative, AI turn, automatic newspaper, article consequences, Escape, mobile layout, export/import/archive, failed AI turn preserves date, explicit offline fallback. Synthetic provider only.');
+    }
     if (systemsMode) {
       await click('Население');
       const baseline = await saved();

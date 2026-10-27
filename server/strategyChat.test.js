@@ -217,3 +217,14 @@ test('cabinet gets its migration and sanitised spy view; foreign delegates never
   await f.send('diplomacy','France');const foreign=JSON.parse(f.inputs.at(-1).context);
   assert.equal(foreign.migration,undefined);assert.equal(foreign.intelligence,undefined);
 });
+
+test('an old model refusal about missing mechanics becomes a reviewable planning stage without a paid retry',async()=>{
+  const f=fixture();f.answer({reply:'В игре нет такой механики, она не реализована.',stance:'discuss',actions:[]});
+  await f.send('decisions','','Хочу учредить межпланетную академию');
+  assert.equal(f.inputs.length,1);assert.equal(f.latest().proposal.actions[0].type,'initiative');
+  assert.equal(f.latest().proposal.actions[0].budget,0);assert.equal(f.latest().proposal.cost.capital,3);
+  assert.equal(f.pair().world.strategy.story,undefined);
+  assert.equal(f.latest().content.includes('не реализована'),false);
+  f.operate('chat-apply',{messageId:f.latest().id});assert.equal(f.pair().world.strategy.story.initiatives[0].status,'active');
+  await f.send('decisions','','Какие механики не реализованы?');assert.equal(f.latest().proposal,undefined);
+});

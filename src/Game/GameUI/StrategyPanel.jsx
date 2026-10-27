@@ -5,6 +5,8 @@ import { saveTextToDisk } from '../../runtime/saveFile.js';
 import { acceptFor } from '../../runtime/fileAccept.js';
 import ChatGPTPanel from './ChatGPTPanel.jsx';
 import StrategyChatPanel from './StrategyChatPanel.jsx';
+import StrategyNewspaper from './StrategyNewspaper.jsx';
+import StrategyInitiatives from './StrategyInitiatives.jsx';
 import StrategySociety from './StrategySociety.jsx';
 import StrategyIntelligence from './StrategyIntelligence.jsx';
 import StrategyRecommendations from './StrategyRecommendations.jsx';
@@ -14,11 +16,18 @@ import './strategy.css';
 const money = (value) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(value);
 const labels = { Germany: 'Германия', France: 'Франция', 'United Kingdom': 'Великобритания', 'United States': 'США', China: 'Китай', Russia: 'Россия', Italy: 'Италия', Japan: 'Япония', India: 'Индия', Spain: 'Испания' };
 const label = (name) => labels[name] || name;
+const savedTurnMode=()=>{try{return localStorage.getItem('oh:strategy:ai-turns')!=='off';}catch{return true;}};
 
 export default function StrategyPanel() {
   const { activeGameId, activeGame, games, scenarios, loaded } = useLibraryState();
   const activeId = useRef(activeGameId);
   useEffect(()=>{activeId.current=activeGameId;},[activeGameId]);
+  const [paper,setPaper]=useState(null);
+  const [aiTurns,setAiTurns]=useState(savedTurnMode);
+  const [turnModels,setTurnModels]=useState([]);
+  const [turnModel,setTurnModel]=useState('');
+  const [failedTurn,setFailedTurn]=useState(null);
+  const web=Boolean(import.meta.env.VITE_OH_WEB);
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -34,6 +43,19 @@ export default function StrategyPanel() {
   const [seed, setSeed] = useState(20161208);
   const [startDate, setStartDate] = useState('2016-12-08');
   const [creating, setCreating] = useState(false);
+  const settingsOpen=tab==='chatgpt';
+  useEffect(()=>{
+    if(web)return;
+    let valid=true;
+    api('/api/strategy/chatgpt/status').then(async status=>{
+      if(!status.canInfer){if(valid){setTurnModels([]);setTurnModel('');}return;}
+      const result=await api('/api/strategy/chatgpt/models');
+      if(valid){setTurnModels(result.models);setTurnModel(current=>result.models.some(m=>m.id===current)?current:result.models[0]?.id||'');}
+    }).catch(()=>{if(valid){setTurnModels([]);setTurnModel('');}});
+    return()=>{valid=false;};
+  },[web,settingsOpen,activeGameId]);
+  useEffect(()=>{setPaper(null);setFailedTurn(null);},[activeGameId]);
+
   const refresh = async () => {
     if (!activeGameId) { setData(null); return; }
     const details = await api(`/api/games/${encodeURIComponent(activeGameId)}`);
@@ -63,11 +85,15 @@ export default function StrategyPanel() {
     await refreshLibraryCatalog({ force: true });
     window.dispatchEvent(new CustomEvent('oh:active-game-changed', { detail: { gameId: activeGameId } }));
   };
-  const command = (operation, body) => run(async () => {
-    const result = await api(`/api/games/${encodeURIComponent(activeGameId)}/simulation/${operation}`, {
-      ...body, expectedRevision: data.world.simulation.revision,
-    });
+  const command = (operation, body, offline=false) => run(async () => {
+    const expectedRevision=data.world.simulation.revision,from=data.game.gameDate;
+    if(offline&&failedTurn&&failedTurn.revision!==expectedRevision)throw new Error('Предыдущий ход уже изменил партию. Проверьте дату перед новым ходом.');
+    const useAI=operation==='advance'&&!offline&&aiTurns&&turnModel;
+    if(useAI)setFailedTurn({step:body.step,revision:expectedRevision});
+    const result = useAI?await api('/api/strategy/chatgpt/advance',{gameId:activeGameId,model:turnModel,...body,expectedRevision},{timeoutMs:200000})
+      :await api(`/api/games/${encodeURIComponent(activeGameId)}/simulation/${operation}`, {...body,expectedRevision});
     await acceptResult(result);
+    if(operation==='advance'){setFailedTurn(null);setPaper({from,to:result.game.gameDate});}
   });
   const decision = (type, value) => command('decision', { type, ...(value !== undefined ? { value } : {}), target });
   const newGame = () => run(async () => {
@@ -89,7 +115,7 @@ export default function StrategyPanel() {
     await activateGame(details.game.id);
   }); };
   const budget = player ? dailyBudget(player, strategy.wars.some((w) => w.a === strategy.player || w.b === strategy.player)) : null;
-  return <aside className={`strategy ${compact ? 'strategy-compact' : ''}`} data-game-id={native ? activeGameId : ''} data-no-translate>
+  return <><aside className={`strategy ${compact ? 'strategy-compact' : ''}`} data-game-id={native ? activeGameId : ''} data-no-translate>
     <header><div><strong>ГОСУДАРСТВО</strong><small>Автономная стратегия · локальная партия</small></div>
       <button onClick={() => setCompact(!compact)} aria-label={compact ? 'Развернуть панель' : 'Свернуть панель'}>{compact ? 'Развернуть' : 'Карта ↗'}</button></header>
     {!compact && <>
@@ -110,10 +136,16 @@ export default function StrategyPanel() {
       {native && <>
         <div className="strategy-title"><h1>{label(strategy.player)}</h1><time>{new Intl.DateTimeFormat('ru-RU', { timeZone: 'UTC', dateStyle: 'long' }).format(new Date(`${data.game.gameDate}T00:00:00Z`))}</time></div>
         <div className="strategy-clock">{[['day', '1 день'], ['week', '7 дней'], ['month', 'Месяц']].map(([step, text]) => <button key={step} disabled={busy} onClick={() => command('advance', { step })}>{busy ? '…' : `▶ ${text}`}</button>)}</div>
-        <p className="strategy-status">Пауза между ходами · изменения сохраняются автоматически</p>
+        <details className="strategy-turn-mode"><summary>{aiTurns&&turnModel?'Ходы с ИИ · расход лимита ChatGPT':'Автономные ходы · без расхода лимита'}</summary>
+          <label><input type="checkbox" checked={aiTurns} disabled={busy||!turnModel} onChange={e=>{setAiTurns(e.target.checked);try{localStorage.setItem('oh:strategy:ai-turns',e.target.checked?'on':'off');}catch{/* storage unavailable */}}}/> Симулировать события ИИ после перемотки</label>
+          {turnModels.length>0?<select aria-label="Модель симуляции мира" value={turnModel} disabled={busy} onChange={e=>setTurnModel(e.target.value)}>{turnModels.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select>:<button onClick={()=>setTab('chatgpt')}>Подключить ChatGPT для свободной симуляции</button>}
+        </details>
+        {busy&&failedTurn&&<button onClick={()=>api('/api/strategy/chatgpt/cancel',{}).catch(e=>setError(e.message))}>Отменить ИИ-ход</button>}
+        {!busy&&error&&failedTurn&&<button onClick={()=>command('advance',{step:failedTurn.step},true)}>Выполнить этот ход без ИИ</button>}
+        <p className="strategy-status">На паузе · после хода выйдет новый выпуск газеты</p>
         <div className="strategy-metrics"><span>Казна<strong>{money(player.treasury)} млн €</strong></span><span>Бюджет/день<strong className={budget.balance < 0 ? 'negative' : ''}>{budget.balance >= 0 ? '+' : ''}{money(budget.balance)} млн €</strong></span>
           <span>Стабильность<strong>{player.stability}/100</strong></span><span>Поддержка решений<strong>{player.capital}/100</strong></span></div>
-        <nav className="strategy-tabs">{[['decisions', 'Чат решений'], ['cabinet', 'Советники'], ['economy', 'Экономика'], ['society', 'Население'], ['diplomacy', 'Дипломатия'], ['intelligence', 'Разведка'], ['security', 'Оборона'], ['history', 'Сводки'], ['chatgpt', 'ChatGPT']].map(([id, text]) => <button key={id} aria-pressed={tab === id} onClick={() => setTab(id)}>{text}</button>)}</nav>
+        <nav className="strategy-tabs">{[['decisions', 'Чат решений'], ['initiatives','Замыслы'], ['cabinet', 'Советники'], ['economy', 'Экономика'], ['society', 'Население'], ['diplomacy', 'Дипломатия'], ['intelligence', 'Разведка'], ['security', 'Оборона'], ['history', 'Газета'], ['chatgpt', 'ChatGPT']].map(([id, text]) => <button key={id} aria-pressed={tab === id} onClick={() => setTab(id)}>{text}</button>)}</nav>
         <main className={`strategy-content ${['decisions','diplomacy'].includes(tab)?'strategy-content-chat':''}`}>
         {tab === 'decisions' && <StrategyChatPanel draft={draft} key={`decisions-${activeGameId}`} gameId={activeGameId} channel="decisions" chats={data.chat} revision={data.world.simulation.revision} label={label} busy={busy} onBusy={setBusy} onResult={acceptResult} onRefresh={refresh} onApply={messageId => command('chat-apply', { messageId })} onSettings={() => setTab('chatgpt')} />}
         {tab === 'chatgpt' && <ChatGPTPanel key={activeGameId} gameId={activeGameId} target={target} />}
@@ -129,13 +161,14 @@ export default function StrategyPanel() {
           {tab === 'diplomacy' ? <details className="strategy-manual"><summary>Договоры и прямые распоряжения</summary><button disabled={busy} onClick={() => decision('trade')}>Предложить торговое соглашение · 365 дней</button><label>Помощь, млн €<input type="number" min="1" max="1000000" value={aid} onChange={(e) => setAid(Number(e.target.value))} /></label><button disabled={busy} onClick={() => decision('aid', aid)}>Перечислить помощь</button><button disabled={busy} onClick={() => decision('sanctions')}>Ввести санкции</button><button disabled={busy} onClick={() => decision('peace')}>Предложить перемирие</button><h3>Действующие договоры</h3>{strategy.treaties.filter((t) => t.a === strategy.player || t.b === strategy.player).map((t, i) => <p key={i}>{label(t.a)} — {label(t.b)} · до {t.until}</p>)}</details>
             : <><p>Боеготовность: {player.readiness}/100. Война увеличивает бюджетные расходы и истощает силы. {Object.keys(strategy.regions || {}).length ? "Наступления меняют контроль над соседними регионами карты, сохраняя юридический суверенитет. Морские десанты не моделируются." : "У этого сохранения нет графа территории. Создайте новую партию для наступлений на карте."}</p><button disabled={busy} onClick={() => decision('mobilize')}>Подготовить резервы · 14 дней</button><button disabled={busy} onClick={() => decision('intel')}>Сбор разведывательных сведений · 7 дней</button><button disabled={busy} onClick={() => decision('war')}>Начать военную операцию</button><h3>Разведывательные оценки</h3>{strategy.reports.slice().reverse().map((r, i) => <p key={i}>{r.date} · {label(r.target)} · доверие {r.confidence} %<br />{r.text}</p>)}</>}
         </section>}
+        {tab === 'initiatives' && <StrategyInitiatives strategy={strategy} onDiscuss={discuss}/>}
         {tab === 'society' && <StrategySociety key={activeGameId} strategy={strategy} label={label} busy={busy} onDecision={body=>command('decision',body)} />}
         {tab === 'intelligence' && <StrategyIntelligence strategy={strategy} label={label} busy={busy} target={target} setTarget={setTarget} onDecision={body=>command('decision',body)} />}
         {tab === 'cabinet' && <StrategyRecommendations strategy={strategy} date={data.game.gameDate} busy={busy} onDecision={body=>command('decision',body)} onDiscuss={discuss} />}
-        {tab === 'history' && <section><h2>Хроника мира</h2>{strategy.history.length ? strategy.history.slice().reverse().map((entry, i) => <article key={i}><small>{entry.date} · {label(entry.country)}</small><p>{entry.text}</p></article>) : <p>Мир на паузе. Примите решение или продвиньте время. Другие государства самостоятельно пересматривают политику в начале месяца.</p>}</section>}
+        {tab === 'history' && <section><h2>Газета и архив</h2><p>Новости вашей альтернативной истории: события, реакции и последствия решений.</p><button className="strategy-primary" onClick={()=>setPaper({})}>Открыть газетный архив</button><details><summary>Внутренний журнал решений</summary>{strategy.history.length ? strategy.history.slice().reverse().map((entry, i) => <article key={i}><small>{entry.date} · {label(entry.country)}</small><p>{entry.text}</p></article>) : <p>Мир на паузе. Примите решение или продвиньте время. Другие государства самостоятельно пересматривают политику в начале месяца.</p>}</details></section>}
         </main>
         <footer><details><summary>Сохранения и сведения о партии</summary><button disabled={busy} onClick={exportGame}>Экспорт партии</button><label className="strategy-file">Импорт партии<input type="file" accept={acceptFor('.json,application/json')} onChange={(e) => { importGame(e.target.files[0]); e.target.value = ''; }} /></label><p>Все численные стартовые данные и коэффициенты — игровые оценки. LLM не участвует в расчётах.</p><a href="?editor=1">Редактор сценариев</a> · <a href="?strategy=1">Обновить</a></details></footer>
       </>}
     </>}
-  </aside>;
+  </aside>{paper&&strategy&&<StrategyNewspaper strategy={strategy} range={paper} label={label} onClose={()=>setPaper(null)}/>}</>;
 }

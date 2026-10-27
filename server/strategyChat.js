@@ -1,6 +1,7 @@
+import { storyMemory } from './simulation/story.js';
 import { intelligenceView } from './simulation/intelligence.js';
 import { ClockRequestError } from './simulation/clockCommand.js';
-import { nativeThreads, conversationId, validateConversation, validateConversationReply, validateNativeChats } from './simulation/conversations.js';
+import { recoverFreeformIntent, nativeThreads, conversationId, validateConversation, validateConversationReply, validateNativeChats } from './simulation/conversations.js';
 import { readWorldSimulation } from './simulation/state.js';
 
 export function createStrategyChat({ readGame, commit, ask }) {
@@ -29,10 +30,13 @@ export function createStrategyChat({ readGame, commit, ask }) {
     // A foreign delegation gets its own conversation and bilateral public facts,
     // never the cabinet's plans, private reports, treasury or exact readiness.
     const { relations: _privateRelations, ...ownCountry } = state.countries[state.player];
-    const context = JSON.stringify({ channel, player: state.player, target, date: data.game.gameDate, dataKind: state.dataKind, history, bilateral,
+    const payload = { channel, player: state.player, target, date: data.game.gameDate, dataKind: state.dataKind, history, bilateral, alternativeHistory: storyMemory(state,channel==='diplomacy'),
       ...(channel === 'decisions' ? { ownCountry, migration: state.migration ? { own: state.migration.countries[state.player], flows: state.migration.flows.filter(f=>f.from===state.player||f.to===state.player).slice(-10) } : null, intelligence: intelligenceView(state), countries: Object.keys(state.countries).sort().slice(0, 200),
         projects: state.projects.filter(p => p.owner === state.player), reports: state.reports.slice(-3),
-        treaties: state.treaties.filter(t => [t.a, t.b].includes(state.player)).slice(-12) } : {}) });
+        treaties: state.treaties.filter(t => [t.a, t.b].includes(state.player)).slice(-12) } : {}) };
+    let context=JSON.stringify(payload);
+    while(context.length>20000 && history.length) {history.shift();context=JSON.stringify(payload);}
+    while(context.length>20000 && payload.alternativeHistory.facts.length) {payload.alternativeHistory.facts.shift();context=JSON.stringify(payload);}
     if (context.length > 20000) throw new ClockRequestError('Контекст беседы слишком велик.');
     const completion = await ask({ model, prompt, context, purpose: 'strategy' });
     let parsed;
@@ -40,7 +44,7 @@ export function createStrategyChat({ readGame, commit, ask }) {
       const text = completion.text.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/, '$1');
       parsed = JSON.parse(text);
     } catch { throw new ClockRequestError('ИИ вернул ответ без проверяемого предложения. Мир не изменён; уточните сообщение.'); }
-    const response = validateConversationReply(parsed, channel, target, state);
+    const response = recoverFreeformIntent(validateConversationReply(parsed, channel, target, state),prompt,channel);
     // No awaits between the final revision check and journal/IDB commit. A turn
     // completed while inference was running wins; a stale response cannot apply.
     return { ...commit(gameId, { expectedRevision, channel, target, prompt, response }, 'chat-record'), usage: completion.usage };

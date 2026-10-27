@@ -1,5 +1,6 @@
 // @ts-check
 // Shared command contract. No filesystem or database dependencies.
+import { applyNewspaper } from './newspaper.js';
 import { advanceSimulationClock } from './time.js';
 import { createSimulationState, readWorldSimulation, validateSimulationState } from './state.js';
 import { createStrategy, strategyDecision } from './strategy.js';
@@ -62,6 +63,13 @@ export function prepareClockAdvance(pair, request, gameId) {
 /** @param {ClockPair} pair @param {string} operation @param {unknown} raw @param {string} gameId @param {{geometry?: unknown, scenarioId?: string}} [context] */
 export function prepareSimulationOperation(pair, operation, raw, gameId, context = {}) {
   if (operation === 'advance') return prepareClockAdvance(pair, raw, gameId);
+  if (operation === 'news-advance') {
+    if(!isObject(raw)||Object.keys(raw).some(k=>!['expectedRevision','step','response'].includes(k)))throw new ClockRequestError('Некорректный газетный ход.');
+    const next=prepareClockAdvance(pair,{step:raw.step,expectedRevision:raw.expectedRevision},gameId);
+    if(!next.world.strategy)throw new ClockRequestError('Выберите расчётную партию.');
+    next.world.strategy=applyNewspaper(/** @type {import('./strategy.js').Strategy} */(next.world.strategy),raw.response,String(pair.game.gameDate),String(next.game.gameDate));
+    return next;
+  }
   if (!isObject(raw)) throw new ClockRequestError('Ожидался объект команды.');
   if (operation === 'start') {
     if (context.scenarioId && context.scenarioId !== pair.meta.scenarioId) throw new ClockRequestError('Сценарий изменился. Обновите партию.', 409);
@@ -78,7 +86,7 @@ export function prepareSimulationOperation(pair, operation, raw, gameId, context
   if (!simulation || simulation.rulesVersion !== 2) throw new ClockRequestError('Расчётный режим не включён.');
   if (typeof raw.expectedRevision !== 'number' || !Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision < 0) throw new ClockRequestError('Некорректная revision команды.');
   if (raw.expectedRevision !== simulation.revision) throw new ClockRequestError('Состояние изменилось. Обновите партию.', 409);
-  if (operation === 'decision' && Object.keys(raw).some((key) => !['type', 'target', 'value', 'expectedRevision'].includes(key))) throw new ClockRequestError('Команда содержит неизвестные поля.');
+  if (operation === 'decision' && Object.keys(raw).some((key) => !['type', 'target', 'value', 'expectedRevision', 'title','description','budget','days','focus','difficulty','visibility'].includes(key))) throw new ClockRequestError('Команда содержит неизвестные поля.');
   if (simulation.revision === Number.MAX_SAFE_INTEGER) throw new ClockRequestError('Счётчик состояния исчерпан.');
   try {
     validateClockPair(pair, gameId);

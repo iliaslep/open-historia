@@ -40,9 +40,9 @@ export default function StrategyChatPanel({ gameId, channel, target = '', chats,
   const locked = busy || sending;
   return <section className="strategy-conversation" data-channel={channel}>
     <h2>{channel === 'decisions' ? 'Чат решений' : `Переговоры: ${label(target)}`}</h2>
-    <p className="strategy-chat-help">{channel === 'decisions' ? 'Пиши приказы и обсуждай политику с правительством.' : 'Обсуждай условия с делегацией выбранной страны: она может согласиться, отказать или предложить компромисс.'} Конкретные действия появляются в предложении; проверь цену и прими его для исполнения.</p>
+    <p className="strategy-chat-help">{channel === 'decisions' ? 'Опиши любое решение: новую организацию, реформу, исследование или дипломатический замысел. ИИ подготовит осуществимый этап с ценой и сроком.' : 'Обсуждай условия с делегацией выбранной страны: она может согласиться, отказать или предложить компромисс.'} Конкретные действия появляются в предложении; проверь цену и прими его для исполнения.</p>
     <div ref={transcript} className="strategy-transcript" aria-live="polite" aria-label={channel === 'decisions' ? 'История решений' : 'История переговоров'}>
-      {!thread?.messages.length && <p>Беседа ещё не начата. {channel === 'decisions' ? 'Например: «Предлагаю повысить налоговую нагрузку до 40 %».' : 'Например: «Предлагаем торговое соглашение на год. Какие условия вы готовы принять?»'}</p>}
+      {!thread?.messages.length && <p>Беседа ещё не начата. {channel === 'decisions' ? 'Например: «Создать космическое агентство и подготовить первую исследовательскую программу».' : 'Например: «Предлагаем торговое соглашение на год. Какие условия вы готовы принять?»'}</p>}
       {thread?.messages.map(m => <article key={m.id} className={`strategy-message strategy-message-${m.role}`}>
         <small>{m.time} · {m.role === 'user' ? 'Вы' : channel === 'decisions' ? 'Правительство · ИИ' : `${label(target)} · ИИ`}</small>
         <p className="strategy-answer">{m.content}</p>
@@ -57,7 +57,7 @@ export default function StrategyChatPanel({ gameId, channel, target = '', chats,
     </div>
     {web ? <p>ИИ-чаты доступны в локальной Windows-версии. Сохранённую переписку можно читать здесь.</p> : !status?.canInfer ? <><p>Для ответа ИИ подключи ChatGPT. Переписка хранится в партии.</p><button onClick={onSettings}>Подключить ChatGPT</button></> : <form onSubmit={e=>send(e)}>
       <label className="strategy-model">Модель<select value={model} disabled={locked} onChange={e => setModel(e.target.value)}>{models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
-      <label>{channel === 'decisions' ? 'Сообщение правительству' : 'Дипломатическое сообщение'}<textarea maxLength="3000" rows="3" placeholder={channel==='decisions'?'Опишите решение или цель вашей политики…':'Предложите условия переговоров…'} value={prompt} disabled={locked} onChange={e => setPrompt(e.target.value)} /></label>
+      <label>{channel === 'decisions' ? 'Сообщение правительству' : 'Дипломатическое сообщение'}<textarea maxLength="3000" rows="3" placeholder={channel==='decisions'?'Любой замысел: что вы хотите изменить в мире?':'Предложите условия переговоров…'} value={prompt} disabled={locked} onChange={e => setPrompt(e.target.value)} /></label>
       {channel==='decisions'&&<button type="button" disabled={locked||!model} onClick={e=>send(e,prompt.trim()?`Предложи три альтернативных проверяемых решения для цели: ${prompt}. Укажи пользу и риски. Используй suggestions, общие actions оставь пустыми.`:'Предложи три альтернативных решения для нашей страны с учётом бюджета, миграции и разведки. Укажи пользу и риски. Используй suggestions, общие actions оставь пустыми.')}>Предложить решения · ИИ</button>}
       <button className="strategy-primary" type="submit" disabled={locked || !model || !prompt.trim()}>{sending ? 'ИИ готовит ответ…' : 'Отправить · расходует лимит ChatGPT'}</button>
     </form>}

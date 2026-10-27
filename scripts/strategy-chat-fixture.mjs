@@ -32,11 +32,20 @@ export async function startChatFixture({authenticated=true}={}) {
     if (url.endsWith('/responses')) {
       const body = JSON.parse(options.body);
       assert.equal(body.store, false); assert.equal(body.stream, true);
-      assert.ok(body.instructions.includes('actions'));
+      assert.ok(body.instructions.includes('actions')||body.instructions.includes('worldEvents'));
       const content = body.input[0].content, at = content.lastIndexOf('\n\nВопрос: ');
       const context = JSON.parse(content.slice(0, at)), prompt = content.slice(at + 10);
       let reply = { reply: 'Уточним дальнейшие решения.', stance: 'discuss', actions: [] };
-      if (prompt.includes('сломанный')) reply = { reply: 'Нельзя исполнять.', stance: 'accept', actions: [{ type: 'gdp', value: 999999 }] };
+      if(body.instructions.includes('worldEvents')) {
+        const articles=context.articles.slice(0,3).map(a=>({id:a.id,title:a.initiativeId?'Научное агентство подвело итоги первого этапа':a.title,body:a.initiativeId?'Правительство рассмотрело отчёт о создании научного агентства. '+a.body:a.body}));
+        const available=context.actors.find(a=>a.country==='France'&&a.canFund);
+        const response={articles,worldEvents:available?[{country:'France',title:'Франция начинает программу научного сотрудничества',body:'Французское правительство выделило собственные средства на подготовку исследовательских проектов. Научные организации обсуждают первые совместные работы.',focus:'science',direction:'advance'}]:[]};
+        return new Response(`data: ${JSON.stringify({type:'response.output_text.delta',delta:JSON.stringify(response)})}\n\ndata: ${JSON.stringify({type:'response.completed',response:{usage:{input_tokens:50,output_tokens:100}}})}\n\n`);
+      }
+
+      if(prompt.includes('академию')) reply={reply:'Такой механики нет, она не реализована в игре.',stance:'discuss',actions:[]};
+      else if(prompt.includes('космическ')) reply={reply:'Начнём с создания агентства и подготовки исследовательской программы.',stance:'accept',actions:[{type:'initiative',title:'Космическое агентство',description:'Создать национальное агентство и подготовить первую исследовательскую программу, согласовав кадровый и научный план.',budget:1000,days:7,focus:'science',difficulty:'ambitious',visibility:'public'}]};
+      else if (prompt.includes('сломанный')) reply = { reply: 'Нельзя исполнять.', stance: 'accept', actions: [{ type: 'gdp', value: 999999 }] };
       else if (context.channel === 'decisions' && prompt.includes('альтернатив')) reply = {reply:'Сравним два направления.',stance:'discuss',actions:[],suggestions:[{title:'Интеграция',reason:'Увеличить фонд, уменьшив свободную казну.',actions:[{type:'migration_fund',value:2}]},{title:'Инфраструктура',reason:'Ускорить рост, выделив средства на 30 дней.',actions:[{type:'industry'}]}]};
       else if (context.channel === 'decisions' && prompt.includes('налог')) reply = { reply: 'Предлагаем налоговую нагрузку 40 % с рассмотрением семь дней.', stance: 'accept', actions: [{ type: 'tax', value: 40 }] };
       else if (context.channel === 'diplomacy') {

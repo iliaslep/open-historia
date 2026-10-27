@@ -1745,7 +1745,7 @@ export const handleGames = async ({ method, segments, body, rawBody, contentType
     if (id === "import" && method === "POST") return jsonResponse(await importGameBundle(body ?? {}), 201);
 
     const sub = segments[1];
-    if (sub === "simulation" && ["advance", "start", "decision", "chat-record", "chat-apply"].includes(segments[2]) && segments.length === 3 && method === "POST") {
+    if (sub === "simulation" && ["advance", "start", "decision", "chat-record", "chat-apply", "news-advance"].includes(segments[2]) && segments.length === 3 && method === "POST") {
       try {
         return jsonResponse(await advanceGameClock(id, body, segments[2]));
       } catch (error) {
